@@ -17,6 +17,6 @@ What it does NOT do:
 ## Usage
 The library is based on channels. You can see a channel as an edge between two nodes in a network. You can choose to send reliable (or unreliable) packets over the channel. You define callbacks for how to send data, which the channels will call when they need to transmit something.
 
-Typically, this would be through sockets, but it doesn't have to be. When data is received is also up to you, but upon receiving it, you can decide whether it should go through the channel.
+Typically, this would be through sockets, but it doesn't have to be. When data is received is also up to you, but upon receiving it, you can decide whether it should go through the channel or not.
 
 See [example.odin](example.odin) for more details on how to use this library.

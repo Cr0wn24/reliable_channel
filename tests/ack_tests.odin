@@ -1,22 +1,24 @@
-package hampuslib_ack
+package reliable_channel_tests
 
 import "core:testing"
 import "core:log"
 import "core:fmt"
 import "core:math/rand"
 
+import "reliable_channel:ack"
+
 Test_Context :: struct {
-  endpoint: ^Endpoint,
+  endpoint: ^ack.Endpoint,
   t: ^testing.T,
   expected_acks: [dynamic]u16,
   packet_loss: u32,
 }
 
-on_send_data :: proc(endpoint: ^Endpoint, packet_data: []u8) {
+on_send_data :: proc(endpoint: ^ack.Endpoint, packet_data: []u8) {
   // simulate 50% packet loss
   test_context := cast(^Test_Context)endpoint.user_data
   if rand.uint32() % 100 >= test_context.packet_loss  {
-    err := endpoint_receive_data(test_context.endpoint, packet_data)
+    err := ack.endpoint_receive_data(test_context.endpoint, packet_data)
     assert(err == nil)
   }
 }
@@ -32,7 +34,7 @@ sending_small_packets :: proc(t: ^testing.T) {
 
   DATA_LEN :: 1024
 
-  on_receive_data :: proc(endpoint: ^Endpoint, sequence: u16, data: []u8) {
+  on_receive_data :: proc(endpoint: ^ack.Endpoint, sequence: u16, data: []u8) {
     test_context := cast(^Test_Context)endpoint.user_data
     testing.expect(test_context.t, len(data) == DATA_LEN, "Didn't receive all the data")
     append(&test_context.expected_acks, sequence)
@@ -41,12 +43,12 @@ sending_small_packets :: proc(t: ^testing.T) {
     }
   }
 
-  err: Error
+  err: ack.Error
 
-  test_context.endpoint, err = endpoint_open(on_send_data, on_receive_data)
+  test_context.endpoint, err = ack.endpoint_open(on_send_data, on_receive_data)
   assert(err == nil)
   defer{
-    err = endpoint_close(test_context.endpoint)
+    err = ack.endpoint_close(test_context.endpoint)
     assert(err == nil)
   }
   test_context.endpoint.user_data = test_context
@@ -57,14 +59,14 @@ sending_small_packets :: proc(t: ^testing.T) {
   }
 
   for i in 0..<0xffff {
-    err = endpoint_send_data(test_context.endpoint, data[:])
+    err = ack.endpoint_send_data(test_context.endpoint, data[:])
     assert(err == nil)
   }
-  err = endpoint_receive_data(test_context.endpoint, data[:])
+  err = ack.endpoint_receive_data(test_context.endpoint, data[:])
   assert(err == nil)
 
 
-  acks := endpoint_get_acks(test_context.endpoint)
+  acks := ack.endpoint_get_acks(test_context.endpoint)
   if len(test_context.expected_acks) == 0 {
     testing.expect(t, len(acks) == 0, "Didn't receive all the acks")
   } else {
@@ -89,7 +91,7 @@ sending_large_packets :: proc(t: ^testing.T) {
 
   DATA_LEN :: 1024*16
 
-  on_receive_data :: proc(endpoint: ^Endpoint, sequence: u16, data: []u8) {
+  on_receive_data :: proc(endpoint: ^ack.Endpoint, sequence: u16, data: []u8) {
     test_context := cast(^Test_Context)endpoint.user_data
     testing.expect(test_context.t, len(data) == DATA_LEN, "Didn't receive all the data")
     append(&test_context.expected_acks, sequence)
@@ -98,12 +100,12 @@ sending_large_packets :: proc(t: ^testing.T) {
     }
   }
 
-  err: Error
+  err: ack.Error
 
-  test_context.endpoint, err = endpoint_open(on_send_data, on_receive_data)
+  test_context.endpoint, err = ack.endpoint_open(on_send_data, on_receive_data)
     assert(err == nil)
   defer {
-    err = endpoint_close(test_context.endpoint)
+    err = ack.endpoint_close(test_context.endpoint)
   }
   test_context.endpoint.user_data = test_context
 
@@ -113,14 +115,14 @@ sending_large_packets :: proc(t: ^testing.T) {
   }
 
   for i in 0..<0xffff {
-    err = endpoint_send_data(test_context.endpoint, data[:])
+    err = ack.endpoint_send_data(test_context.endpoint, data[:])
     assert(err == nil)
   }
   log.info("sending last")
-  err = endpoint_receive_data(test_context.endpoint, data[:])
+  err = ack.endpoint_receive_data(test_context.endpoint, data[:])
   assert(err == nil)
 
-  acks := endpoint_get_acks(test_context.endpoint)
+  acks := ack.endpoint_get_acks(test_context.endpoint)
   if len(test_context.expected_acks) == 0 {
     testing.expect(t, len(acks) == 0, "Didn't receive all the acks")
   } else {

@@ -1,4 +1,4 @@
-package hampuslib_ack
+package reliable_channel_ack_tests
 
 import "base:runtime"
 
@@ -27,8 +27,8 @@ sequence_less_than :: proc(s1, s2: u16) -> bool {
   return result
 }
 
-send_data_callback :: #type proc(ep: ^Endpoint, packet_data: []u8)
-receive_data_callback :: #type proc(ep: ^Endpoint, sequence: u16, data: []u8)
+Send_Data_Callback :: #type proc(ep: ^Endpoint, packet_data: []u8)
+Receive_Data_Callback :: #type proc(ep: ^Endpoint, sequence: u16, data: []u8)
 
 Received_Packet :: struct {
   sequence: u16,
@@ -51,8 +51,8 @@ Fragment_Packet_Reassembly_Buffer_Entry :: struct {
 
 Endpoint :: struct {
   sequence: u16,
-  send_callback: send_data_callback,
-  receive_callback: receive_data_callback,
+  send_callback: Send_Data_Callback,
+  receive_callback: Receive_Data_Callback,
 
   received_packets_buffer_sequence: u16,
   received_packets_buffer: [4096]Maybe(Received_Packet),
@@ -133,7 +133,7 @@ error_string :: proc(err: Error) -> string {
 }
 
 @require_results
-endpoint_open :: proc(send_callback: send_data_callback, receive_callback: receive_data_callback) -> (result: ^Endpoint, err: Error) {
+endpoint_open :: proc(send_callback: Send_Data_Callback, receive_callback: Receive_Data_Callback) -> (result: ^Endpoint, err: Error) {
   if send_callback == nil {
     return nil, .Invalid_Send_Callback
   }

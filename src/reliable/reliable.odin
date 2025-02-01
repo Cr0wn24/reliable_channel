@@ -137,10 +137,10 @@ chunk_receiver_make_ack_packet :: proc(chunk_receiver: ^Chunk_Receiver, reliable
   return ack_packet
 }
 
+Send_Data_Callback :: #type proc(channel: ^Channel, packet_data: []u8)
+
 Channel :: struct {
   endpoint: ^ack.Endpoint,
-  remote_address: net.Endpoint,
-  socket: net.UDP_Socket,
   received_data: [dynamic][]u8,
   allocator: mem.Allocator,
 
@@ -159,11 +159,15 @@ Channel :: struct {
   chunk_receiver: Chunk_Receiver,
 
   last_keep_alive_send_time: time.Time,
+
+  user_data: rawptr,
+
+  send_callback: Send_Data_Callback,
 }
 
 channel_on_send_data :: proc(endpoint: ^ack.Endpoint, packet_data: []u8) {
   channel := cast(^Channel)endpoint.user_data
-  net.send_udp(channel.socket, packet_data, channel.remote_address)
+  channel.send_callback(channel, packet_data)
 }
 
 channel_on_receive_data :: proc(endpoint: ^ack.Endpoint, sequence: u16, data: []u8) {
@@ -281,12 +285,10 @@ channel_on_receive_data :: proc(endpoint: ^ack.Endpoint, sequence: u16, data: []
   }
 }
 
-channel_open :: proc(socket: net.UDP_Socket, remote_address: net.Endpoint) -> ^Channel
-{
+channel_open :: proc(on_send_callback: Send_Data_Callback) -> ^Channel {
   result := new(Channel, context.allocator)
   result.allocator = context.allocator
-  result.socket = socket
-  result.remote_address = remote_address
+  result.send_callback = on_send_callback
   err: ack.Error
   result.endpoint, err = ack.endpoint_open(channel_on_send_data, channel_on_receive_data)
   assert(err == nil)
@@ -453,10 +455,5 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
 
 channel_get_received_data :: proc(channel: ^Channel) -> [][]u8 {
   result := channel.received_data[:]
-  return result
-}
-
-channel_get_address :: proc(channel: ^Channel) -> net.Endpoint {
-  result := channel.remote_address
   return result
 }

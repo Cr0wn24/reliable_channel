@@ -86,7 +86,10 @@ main :: proc() {
 
     time.sleep(time.Millisecond * 50)
 
+    free_all(context.temp_allocator)
+    
     dt = f32(time.duration_seconds(time.since(start_time)))
     start_time = time.now()
+
   }
 }

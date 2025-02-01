@@ -19,6 +19,6 @@ What it does _not_ do:
 ## Usage
 
 The library is based on channels. You can see a channel as just an edge between two nodes in a network. You can choose to send reliable (or unreliable) packets over the channel. You define callbacks for how to send data which the channels will call into when they want to transmit something.
-Typically, this would be through sockets but doesn't have to be. 
+Typically, this would be through sockets but doesn't have to be. When data is received is also up to you, but when you receive you can decide if it should go through the channel or not.
 
 See [example.odin](example.odin) on how to further use this library.

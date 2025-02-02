@@ -34,13 +34,14 @@ sending_small_packets :: proc(t: ^testing.T) {
 
   DATA_LEN :: 1024
 
-  on_receive_data :: proc(endpoint: ^ack.Endpoint, sequence: u16, data: []u8) {
+  on_receive_data :: proc(endpoint: ^ack.Endpoint, sequence: u16, data: []u8) -> bool {
     test_context := cast(^Test_Context)endpoint.user_data
     testing.expect(test_context.t, len(data) == DATA_LEN, "Didn't receive all the data")
     append(&test_context.expected_acks, sequence)
     for elem, idx in data {
       testing.expect(test_context.t, elem == u8(idx), "Got a wrong value")
     }
+    return true
   }
 
   err: ack.Error
@@ -91,13 +92,14 @@ sending_large_packets :: proc(t: ^testing.T) {
 
   DATA_LEN :: 1024*16
 
-  on_receive_data :: proc(endpoint: ^ack.Endpoint, sequence: u16, data: []u8) {
+  on_receive_data :: proc(endpoint: ^ack.Endpoint, sequence: u16, data: []u8) -> bool {
     test_context := cast(^Test_Context)endpoint.user_data
     testing.expect(test_context.t, len(data) == DATA_LEN, "Didn't receive all the data")
     append(&test_context.expected_acks, sequence)
     for elem, idx in data {
       testing.expect(test_context.t, elem == u8(idx), "Got a wrong value")
     }
+    return true
   }
 
   err: ack.Error

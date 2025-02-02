@@ -4,14 +4,8 @@ import "base:runtime"
 
 import "core:log"
 import "core:time"
-import "core:slice"
-import "core:flags"
-import "core:fmt"
 import "core:mem"
 import "core:os"
-import "core:thread"
-import "core:math/rand"
-import "core:net"
 
 FRAGMENT_SIZE :: 1024
 MAX_FRAGMENT_COUNT :: 256
@@ -28,7 +22,7 @@ sequence_less_than :: proc(s1, s2: u16) -> bool {
 }
 
 Send_Data_Callback :: #type proc(ep: ^Endpoint, packet_data: []u8)
-Receive_Data_Callback :: #type proc(ep: ^Endpoint, sequence: u16, data: []u8)
+Receive_Data_Callback :: #type proc(ep: ^Endpoint, sequence: u16, data: []u8) -> bool
 
 Received_Packet :: struct {
   sequence: u16,
@@ -356,23 +350,27 @@ endpoint_receive_data :: proc(ep: ^Endpoint, packet_data: []u8) -> Error {
 
     // process packet data
 
-    if sequence_greater_than(packet.sequence+1, ep.received_packets_buffer_sequence) {
-      min_idx := ep.received_packets_buffer_sequence
-      max_idx := packet.sequence
-      for idx in min_idx..=max_idx {
-        ep.received_packets_buffer[idx % len(ep.received_packets_buffer)] = nil
+    if ep.receive_callback(ep, packet.sequence, packet_data[size_of(Packet):]) {
+
+      if sequence_greater_than(packet.sequence+1, ep.received_packets_buffer_sequence) {
+        min_idx := ep.received_packets_buffer_sequence
+        max_idx := packet.sequence
+        for idx in min_idx..=max_idx {
+          ep.received_packets_buffer[idx % len(ep.received_packets_buffer)] = nil
+        }
+
+        ep.received_packets_buffer_sequence = packet.sequence + 1
       }
 
-      ep.received_packets_buffer_sequence = packet.sequence + 1
+      received_packet := Received_Packet {
+        sequence = packet.sequence,
+      }
+
+      ep.received_packets_buffer[packet.sequence%len(ep.received_packets_buffer)] = received_packet
+
+    } else {
+      log.info("Packet", packet.sequence, " was not valid. Ignoring it")
     }
-
-    received_packet := Received_Packet {
-      sequence = packet.sequence,
-    }
-
-    ep.received_packets_buffer[packet.sequence%len(ep.received_packets_buffer)] = received_packet
-
-    ep.receive_callback(ep, packet.sequence, packet_data[size_of(Packet):])
 
   } else if packet_kind == .Fragment {
     packet := cast(^Fragment_Packet)raw_data(packet_data)

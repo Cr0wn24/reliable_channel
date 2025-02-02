@@ -1,14 +1,14 @@
 package hampuslib_reliable
 
-import "core:net"
-import "core:log"
-import "core:fmt"
 import "core:mem"
 import "core:slice"
 import "core:time"
-import "core:math/rand"
+import "core:hash"
 
 import "../ack"
+
+PROTOCOL_ID : u32 : 1
+AVAILABLE_BANDWIDTH_KBPS :: 256
 
 Reliable_ID :: distinct u16
 
@@ -27,42 +27,85 @@ reliable_id_match :: proc(s1, s2: Reliable_ID) -> bool {
   return result
 }
 
-AVAILABLE_BANDWIDTH_KBPS :: 256
-
-SLICE_SIZE_CRITICAL_VALUE :: ack.FRAGMENT_SIZE - size_of(Normal_Packet)
-SLICE_SIZE :: ack.FRAGMENT_SIZE - size_of(Slice_Packet)
+SLICE_SIZE_CRITICAL_VALUE :: ack.FRAGMENT_SIZE - size_of(Normal_Packet) - size_of(u32)
+SLICE_SIZE :: ack.FRAGMENT_SIZE - size_of(Slice_Packet) - size_of(u32)
 MAX_SLICES_PER_CHUNK :: 256
 MAX_CHUNK_SIZE :: SLICE_SIZE * MAX_SLICES_PER_CHUNK
 
 Packet_Kind :: enum {
   Normal,
   Slice,
-  Ack,
+  Slice_Ack,
   Keep_Alive,
 }
 
-Keep_Alive_Packet :: struct {
+Base_Packet :: struct {
+  crc32: u32,
   kind: Packet_Kind,
 }
 
+Keep_Alive_Packet :: struct {
+  using base: Base_Packet,
+}
+
 Normal_Packet :: struct {
-  kind: Packet_Kind,
+  using base: Base_Packet,
   is_reliable: bool,
   id: Reliable_ID,
 }
 
 Slice_Packet :: struct {
-  kind: Packet_Kind,
+  using base: Base_Packet,
   id: Reliable_ID,
   slice_id: u8,
   num_slices: u16,
   slice_size: u16,
 }
 
-Ack_Packet :: struct {
-  kind: Packet_Kind,
+Slice_Ack_Packet :: struct {
+  using base: Base_Packet,
   id: Reliable_ID,
   acked: [2]u128,
+}
+
+add_crc32_to_packet :: proc(packet_data: []u8) {
+  packet_base := cast(^Base_Packet)raw_data(packet_data)
+  packet_base.crc32 = hash.crc32(packet_data[size_of(u32):len(packet_data)-size_of(u32)], seed = PROTOCOL_ID)
+  last_crc32 := cast(^u32)raw_data(packet_data[len(packet_data)-size_of(u32):])
+  last_crc32^ = packet_base.crc32
+}
+
+make_packet :: proc(kind: Packet_Kind, data: []u8 = {}, allocator := context.temp_allocator, loc := #caller_location) -> []u8 {
+
+  packet_size := 0
+
+  switch kind {
+    case .Normal: packet_size = size_of(Normal_Packet)
+    case .Slice: packet_size = size_of(Slice_Packet)
+    case .Slice_Ack: packet_size = size_of(Slice_Ack_Packet)
+    case .Keep_Alive: packet_size = size_of(Keep_Alive_Packet)
+  }
+
+  packet_data := make([]u8, packet_size + len(data) + size_of(u32), allocator = allocator)
+
+  base_packet := cast(^Base_Packet)raw_data(packet_data)
+  base_packet.kind = kind
+  copy(packet_data[packet_size:len(packet_data)-size_of(u32)], data)
+  return packet_data
+}
+
+get_packet_payload :: proc(kind: Packet_Kind, packet_data: []u8) -> []u8 {
+
+  packet_size := 0
+
+  switch kind {
+    case .Normal: packet_size = size_of(Normal_Packet)
+    case .Slice: packet_size = size_of(Slice_Packet)
+    case .Slice_Ack: packet_size = size_of(Slice_Ack_Packet)
+    case .Keep_Alive: packet_size = size_of(Keep_Alive_Packet)
+  }
+
+  return packet_data[packet_size:len(packet_data)-size_of(u32)]
 }
 
 Reliable_Packet_Buffer_Entry :: struct {
@@ -92,14 +135,15 @@ chunk_sender_make_slice_packet :: proc(chunk_sender: ^Chunk_Sender, slice_id: u8
   } else {
     slice_size = SLICE_SIZE
   }
-  packet_data := make([]u8, size_of(Slice_Packet) + slice_size, allocator = allocator, loc = loc)
+
+  packet_data := make_packet(.Slice, chunk_sender.chunk_data[int(slice_id)*SLICE_SIZE:(int(slice_id)+1)*SLICE_SIZE], allocator = allocator, loc = loc)
   slice_packet := cast(^Slice_Packet)raw_data(packet_data)
-  slice_packet.kind = .Slice
   slice_packet.id = reliable_id
   slice_packet.slice_id = u8(slice_id)
   slice_packet.num_slices = chunk_sender.num_slices
   slice_packet.slice_size = u16(slice_size)
-  copy(packet_data[size_of(Slice_Packet):], chunk_sender.chunk_data[int(slice_id)*SLICE_SIZE:(int(slice_id)+1)*SLICE_SIZE])
+
+  add_crc32_to_packet(packet_data)
   return packet_data
 }
 
@@ -117,24 +161,26 @@ Chunk_Receiver :: struct {
   chunk_data: [MAX_CHUNK_SIZE]u8,
 }
 
-chunk_receiver_make_ack_packet :: proc(chunk_receiver: ^Chunk_Receiver, reliable_id: Reliable_ID) -> Ack_Packet {
-  ack_packet := Ack_Packet{
-    kind = .Ack,
-    id = reliable_id,
-  }
+chunk_receiver_make_ack_packet :: proc(chunk_receiver: ^Chunk_Receiver, reliable_id: Reliable_ID) -> []u8 {
+
+  packet_data := make_packet(.Slice_Ack, allocator = context.temp_allocator)
+  packet := cast(^Slice_Ack_Packet)raw_data(packet_data)
+  packet.id = reliable_id
 
   for slice_id in 0..<min(128, chunk_receiver.num_slices) {
     if chunk_receiver.received[slice_id] {
-      ack_packet.acked[0] |= 1 << slice_id
+      packet.acked[0] |= 1 << slice_id
     }
   }
 
   for slice_id in 128..<chunk_receiver.num_slices {
     if chunk_receiver.received[slice_id] {
-      ack_packet.acked[1] |= 1 << (slice_id - 128)
+      packet.acked[1] |= 1 << (slice_id - 128)
     }
   }
-  return ack_packet
+
+  add_crc32_to_packet(packet_data)
+  return packet_data
 }
 
 Send_Data_Callback :: #type proc(channel: ^Channel, packet_data: []u8)
@@ -170,9 +216,16 @@ channel_on_send_data :: proc(endpoint: ^ack.Endpoint, packet_data: []u8) {
   channel.send_callback(channel, packet_data)
 }
 
-channel_on_receive_data :: proc(endpoint: ^ack.Endpoint, sequence: u16, data: []u8) {
+channel_on_receive_data :: proc(endpoint: ^ack.Endpoint, sequence: u16, packet_data: []u8) -> bool {
   channel := cast(^Channel)endpoint.user_data
-  kind := cast(^Packet_Kind)raw_data(data)
+  base_packet := cast(^Base_Packet)raw_data(packet_data)
+
+  crc32 := hash.crc32(packet_data[size_of(u32):len(packet_data)-size_of(u32)], seed = PROTOCOL_ID)
+  last_crc32 := cast(^u32)raw_data(packet_data[len(packet_data)-size_of(u32):])
+
+  if base_packet.crc32 != crc32 || last_crc32^ != crc32 {
+    return false
+  }
 
   // NOTE(hampus): Two reliable packets can't get received out-of-order.
   // However, a reliable packet and an unreliable packet can get received
@@ -181,8 +234,8 @@ channel_on_receive_data :: proc(endpoint: ^ack.Endpoint, sequence: u16, data: []
 
   should_accept_packet := false
   is_reliable := false
-  if kind^ == .Normal {
-    packet := cast(^Normal_Packet)raw_data(data)
+  if base_packet.kind == .Normal {
+    packet := cast(^Normal_Packet)raw_data(packet_data)
     is_reliable = packet.is_reliable
     if is_reliable {
       if reliable_id_match(packet.id, channel.next_reliable_id_to_receive) {
@@ -190,7 +243,7 @@ channel_on_receive_data :: proc(endpoint: ^ack.Endpoint, sequence: u16, data: []
         should_accept_packet = true
       }
     }
-  } else if kind^ == .Slice {
+  } else if base_packet.kind == .Slice {
     should_accept_packet = true
   }
 
@@ -204,17 +257,17 @@ channel_on_receive_data :: proc(endpoint: ^ack.Endpoint, sequence: u16, data: []
   }
 
   if should_accept_packet {
-    switch kind^ {
+    switch base_packet.kind {
       case .Keep_Alive:
 
       case .Normal:
-      packet := cast(^Normal_Packet)raw_data(data)
-      cloned_data := slice.clone(data[size_of(Normal_Packet):], context.temp_allocator)
+      packet := cast(^Normal_Packet)raw_data(packet_data)
+      cloned_data := slice.clone(get_packet_payload(.Normal, packet_data), context.temp_allocator)
       append(&channel.received_data, cloned_data)
 
       case .Slice:
       chunk_receiver := &channel.chunk_receiver
-      packet := cast(^Slice_Packet)raw_data(data)
+      packet := cast(^Slice_Packet)raw_data(packet_data)
       switch chunk_receiver.status {
         case .Ready_To_Receive_New_Chunk:
         if reliable_id_match(packet.id, channel.next_reliable_id_to_receive) {
@@ -228,7 +281,7 @@ channel_on_receive_data :: proc(endpoint: ^ack.Endpoint, sequence: u16, data: []
           // We have received all the slices but all our acks has
           // not gone through
           ack_packet := chunk_receiver_make_ack_packet(chunk_receiver, packet.id)
-          err := ack.endpoint_send_data(endpoint, mem.any_to_bytes(ack_packet))
+          err := ack.endpoint_send_data(endpoint, ack_packet)
           assert(err == nil)
           break
         }
@@ -241,11 +294,11 @@ channel_on_receive_data :: proc(endpoint: ^ack.Endpoint, sequence: u16, data: []
             chunk_receiver.num_received_slices += 1
             chunk_receiver.chunk_size += u32(packet.slice_size)
             chunk_receiver.received[packet.slice_id] = true
-            copy(chunk_receiver.chunk_data[u32(packet.slice_id)*SLICE_SIZE:(u32(packet.slice_id)+1)*SLICE_SIZE], data[size_of(Slice_Packet):])
+            copy(chunk_receiver.chunk_data[u32(packet.slice_id)*SLICE_SIZE:(u32(packet.slice_id)+1)*SLICE_SIZE], get_packet_payload(.Slice, packet_data))
           }
 
           ack_packet := chunk_receiver_make_ack_packet(chunk_receiver, channel.next_reliable_id_to_receive-1)
-          err := ack.endpoint_send_data(channel.endpoint, mem.any_to_bytes(ack_packet))
+          err := ack.endpoint_send_data(channel.endpoint, ack_packet)
           assert(err == nil)
 
           if chunk_receiver.num_received_slices == chunk_receiver.num_slices {
@@ -257,10 +310,10 @@ channel_on_receive_data :: proc(endpoint: ^ack.Endpoint, sequence: u16, data: []
 
       }
 
-      case .Ack:
+      case .Slice_Ack:
       chunk_sender := &channel.chunk_sender
       if chunk_sender.sending {
-        packet := cast(^Ack_Packet)raw_data(data)
+        packet := cast(^Slice_Ack_Packet)raw_data(packet_data)
         if reliable_id_match(packet.id, chunk_sender.entry.id) {
           for bit: u32 = 0; bit < 128; bit += 1 {
             if (!chunk_sender.acked[bit] && (packet.acked[0] & (1 << bit)) != 0) {
@@ -283,6 +336,8 @@ channel_on_receive_data :: proc(endpoint: ^ack.Endpoint, sequence: u16, data: []
       }
     }
   }
+
+  return true
 }
 
 channel_open :: proc(on_send_callback: Send_Data_Callback) -> ^Channel {
@@ -340,12 +395,11 @@ channel_send_reliable_packet_immediate :: proc(channel: ^Channel, packet: ^Relia
     packet.waiting_for_ack = true
     packet.last_send_time = time.now()
     packet.sequence = ack.endpoint_get_next_sequence(channel.endpoint)
-    packet_data := make([]u8, len(packet.data) + size_of(Normal_Packet), context.temp_allocator)
+    packet_data := make_packet(.Normal, packet.data, allocator = context.temp_allocator)
     normal_packet := cast(^Normal_Packet)raw_data(packet_data)
-    normal_packet.kind = .Normal
     normal_packet.is_reliable = true
     normal_packet.id = packet.id
-    copy(packet_data[size_of(Normal_Packet):], packet.data)
+    add_crc32_to_packet(packet_data)
     err := ack.endpoint_send_data(channel.endpoint, packet_data)
     assert(err == nil)
   }
@@ -366,10 +420,8 @@ channel_send_bytes :: proc(channel: ^Channel, data: []u8, is_reliable := false) 
   if is_reliable {
     channel_push_reliable_data(channel, data)
   } else {
-    packet_data := make([]u8, len(data) + size_of(Normal_Packet), context.temp_allocator)
-    packet := cast(^Normal_Packet)raw_data(packet_data)
-    packet.kind = .Normal
-    copy(packet_data[size_of(Normal_Packet):], data)
+    packet_data := make_packet(.Normal, data, allocator = context.temp_allocator)
+    add_crc32_to_packet(packet_data)
     err := ack.endpoint_send_data(channel.endpoint, packet_data)
     assert(err == nil)
   }
@@ -444,9 +496,9 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
   ack.endpoint_clear_acks(channel.endpoint)
 
   if f32(time.duration_milliseconds(time.since(channel.last_keep_alive_send_time))) >= channel.endpoint.estimated_rtt_ms/2 {
-    packet_data := make([]u8, size_of(Keep_Alive_Packet), context.temp_allocator)
+    packet_data := make_packet(.Keep_Alive, allocator = context.temp_allocator)
     packet := cast(^Keep_Alive_Packet)raw_data(packet_data)
-    packet.kind = .Keep_Alive
+    add_crc32_to_packet(packet_data)
     err := ack.endpoint_send_data(channel.endpoint, packet_data)
     assert(err == nil)
     channel.last_keep_alive_send_time = time.now()

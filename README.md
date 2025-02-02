@@ -14,6 +14,8 @@ What it does NOT offer:
 - Security
 - Congestion avoidance
 
+Leaving out connections is a design choice. Instead, it is designed to work well with your own connection protocol. Leaving out security is also intentional, as I am not an expert in the field of security and would rather give that responsibility to the user of this library. Congestion avoidance is something that might be added at some point.
+
 ## Tests
 
 The tests are considered successful when they pass under both perfect network conditions _and_ horrible network conditions. To test under poor network conditions, I recommend using something like [clumsy](https://jagt.github.io/clumsy/), which can simulate packet loss, lag, duplication, among other things.

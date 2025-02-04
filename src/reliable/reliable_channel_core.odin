@@ -196,7 +196,7 @@ Channel :: struct {
   reliable_packet_buffer_read_pos: int,
   reliable_packet_buffer: [4096]Reliable_Packet_Buffer_Entry,
 
-  next_reliable_id_to_send: Reliable_ID,
+  next_reliable_id_to_push: Reliable_ID,
   next_reliable_id_to_receive: Reliable_ID,
 
   chunk_sending_budget_bytes: f64,
@@ -372,6 +372,7 @@ channel_send_reliable_packet_immediate :: proc(channel: ^Channel, packet: ^Relia
   assert(num_slices > 0)
   if num_slices > 1 {
 
+    packet.waiting_for_ack = true
     num_slices = (len(packet.data) / SLICE_SIZE) + (((len(packet.data) % SLICE_SIZE) != 0) ? 1 : 0)
     chunk_sender := &channel.chunk_sender
     assert(!chunk_sender.sending)
@@ -411,9 +412,11 @@ channel_push_reliable_data :: proc(channel: ^Channel, data: []u8) {
   entry := &channel.reliable_packet_buffer[channel.reliable_packet_buffer_write_pos%len(channel.reliable_packet_buffer)]
   assert(!entry.waiting_for_ack)
   entry.data = slice.clone(data, channel.allocator)
-  entry.id = channel.next_reliable_id_to_send
+  entry.id = channel.next_reliable_id_to_push
+  entry.waiting_for_ack = false
   channel.reliable_packet_buffer_write_pos += 1
-  channel.next_reliable_id_to_send += 1
+  channel.next_reliable_id_to_push += 1
+  if channel_can_send_next_reliable_packet(channel) do channel_send_next_reliable_packet(channel)
 }
 
 channel_send_bytes :: proc(channel: ^Channel, data: []u8, is_reliable := false) {
@@ -469,25 +472,26 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
       }
     }
   } else {
-    if channel.reliable_packet_buffer_read_pos != channel.reliable_packet_buffer_write_pos {
+    if channel_can_send_next_reliable_packet(channel) do channel_send_next_reliable_packet(channel)
+
+    if channel.reliable_packet_buffer_read_pos < channel.reliable_packet_buffer_write_pos {
       entry := &channel.reliable_packet_buffer[channel.reliable_packet_buffer_read_pos%len(channel.reliable_packet_buffer)]
-      if !entry.waiting_for_ack {
-        channel_send_reliable_packet_immediate(channel, entry)
-      }
 
-      if !chunk_sender.sending && entry.waiting_for_ack{
-        acks := ack.endpoint_get_acks(channel.endpoint)
-        for ack in acks {
-          if ack == entry.sequence {
-            entry.waiting_for_ack = false
-            delete(entry.data, channel.allocator)
-            entry.data = nil
-            channel.reliable_packet_buffer_read_pos += 1
+      if !chunk_sender.sending {
+        if entry.waiting_for_ack{
+          acks := ack.endpoint_get_acks(channel.endpoint)
+          for ack in acks {
+            if ack == entry.sequence {
+              entry.waiting_for_ack = false
+              delete(entry.data, channel.allocator)
+              entry.data = nil
+              channel.reliable_packet_buffer_read_pos += 1
+            }
           }
-        }
 
-        if entry.waiting_for_ack && f32(time.duration_milliseconds(time.since(entry.last_send_time))) >= (channel.endpoint.estimated_rtt_ms*1.25) {
-          channel_send_reliable_packet_immediate(channel, entry)
+          if entry.waiting_for_ack && f32(time.duration_milliseconds(time.since(entry.last_send_time))) >= (channel.endpoint.estimated_rtt_ms*1.25) {
+            channel_send_reliable_packet_immediate(channel, entry)
+          }
         }
       }
     }
@@ -508,4 +512,20 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
 channel_get_received_data :: proc(channel: ^Channel) -> [][]u8 {
   result := channel.received_data[:]
   return result
+}
+
+channel_can_send_next_reliable_packet :: proc(channel: ^Channel) -> bool {
+  result := false
+  if channel.reliable_packet_buffer_read_pos < channel.reliable_packet_buffer_write_pos {
+    entry := &channel.reliable_packet_buffer[channel.reliable_packet_buffer_read_pos%len(channel.reliable_packet_buffer)]
+    if !entry.waiting_for_ack {
+      result = true
+    }
+  }
+  return result
+}
+
+channel_send_next_reliable_packet :: proc(channel: ^Channel) {
+  entry := &channel.reliable_packet_buffer[channel.reliable_packet_buffer_read_pos%len(channel.reliable_packet_buffer)]
+  channel_send_reliable_packet_immediate(channel, entry)
 }

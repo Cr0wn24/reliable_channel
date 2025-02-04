@@ -1,6 +1,7 @@
 package hampuslib_reliable
 
 import "core:mem"
+import "core:log"
 import "core:slice"
 import "core:time"
 import "core:hash"
@@ -224,6 +225,7 @@ channel_on_receive_data :: proc(endpoint: ^ack.Endpoint, sequence: u16, packet_d
   last_crc32 := cast(^u32)raw_data(packet_data[len(packet_data)-size_of(u32):])
 
   if base_packet.crc32 != crc32 || last_crc32^ != crc32 {
+    log.error("Got packet with wrong crc32 with sequence:", sequence)
     return false
   }
 
@@ -242,21 +244,17 @@ channel_on_receive_data :: proc(endpoint: ^ack.Endpoint, sequence: u16, packet_d
         channel.next_reliable_id_to_receive += 1
         should_accept_packet = true
       }
+    } else {
+      should_accept_packet = ack.sequence_greater_than(sequence, channel.remote_sequence-1)
     }
-  } else if base_packet.kind == .Slice {
+  } else if base_packet.kind == .Slice || base_packet.kind == .Slice_Ack || base_packet.kind == .Keep_Alive {
     should_accept_packet = true
   }
 
-  // NOTE(hampus): We also make an exception for slice packets.
-
-  if !should_accept_packet && !is_reliable {
+  if should_accept_packet {
     if ack.sequence_greater_than(sequence, channel.remote_sequence-1) {
       channel.remote_sequence = sequence+1
-      should_accept_packet = true
     }
-  }
-
-  if should_accept_packet {
     switch base_packet.kind {
       case .Keep_Alive:
 
@@ -335,6 +333,8 @@ channel_on_receive_data :: proc(endpoint: ^ack.Endpoint, sequence: u16, packet_d
         }
       }
     }
+  } else {
+    log.warn("Ignoring packet:", sequence, "expected sequence:", channel.remote_sequence, base_packet.kind, is_reliable)
   }
 
   return true
@@ -528,4 +528,21 @@ channel_can_send_next_reliable_packet :: proc(channel: ^Channel) -> bool {
 channel_send_next_reliable_packet :: proc(channel: ^Channel) {
   entry := &channel.reliable_packet_buffer[channel.reliable_packet_buffer_read_pos%len(channel.reliable_packet_buffer)]
   channel_send_reliable_packet_immediate(channel, entry)
+}
+
+Perf_Stats :: struct {
+  estimated_packet_loss: f32,
+  estimated_rtt_ms: f32,
+  estimated_sent_bandwidth: f32,
+  estimated_received_bandwidth: f32,
+}
+
+channel_get_perf_stats :: proc(channel: ^Channel) -> Perf_Stats {
+  result := Perf_Stats {
+    estimated_packet_loss = channel.endpoint.estimated_packet_loss,
+    estimated_rtt_ms = channel.endpoint.estimated_rtt_ms,
+    estimated_sent_bandwidth = channel.endpoint.estimated_sent_bandwidth,
+    estimated_received_bandwidth = channel.endpoint.estimated_received_bandwidth,
+  }
+  return result
 }

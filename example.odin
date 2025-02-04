@@ -76,8 +76,14 @@ main :: proc() {
       }
     }
 
+    // send unreliably
+
     str := "hello, world!"
     rc.channel_send(client_channel, transmute([]u8)str)
+
+    // send reliably
+
+    rc.channel_send(client_channel, transmute([]u8)str, is_reliable = true)
 
     server_channel_data := rc.channel_get_received_data(server_channel)
     for data in server_channel_data {
@@ -87,7 +93,7 @@ main :: proc() {
     time.sleep(time.Millisecond * 50)
 
     free_all(context.temp_allocator)
-    
+
     dt = f32(time.duration_seconds(time.since(start_time)))
     start_time = time.now()
 

@@ -26,4 +26,37 @@ The library is based on channels. You can think of a channel as an edge between 
 
 Typically, this would be through sockets, but it doesn't have to be. When data is received is also up to you, but upon receiving it, you can decide whether it should go through the channel or not.
 
-See [example.odin](example.odin) for more details on how to use this library.
+Here is a small example:
+```odin
+import "core:fmt"
+
+import rc "reliable_channel:reliable"
+
+client_to_server_channel: ^rc.Channel
+server_to_client_channel: ^rc.Channel
+
+on_send_data :: proc(channel: ^rc.Channel, packet_data: []u8) {
+  if channel == client_to_server_channel {
+    rc.channel_receive(server_to_client_channel, packet_data)
+  } else {
+    rc.channel_receive(client_to_server_channel, packet_data)
+  }
+}
+
+main :: proc() {
+  client_to_server_channel = rc.channel_open(on_send_data)
+  server_to_client_channel = rc.channel_open(on_send_data)
+  
+  dt: f32 = 0.33
+  rc.channel_update(client_to_server_channel, dt)
+  rc.channel_update(server_to_client_channel, dt)
+  
+  str := "Hello, channel!"
+  rc.channel_send(client_to_server_channel, transmute([]u8)str, is_reliable = true)
+  
+  data_from_client := rc.channel_get_received_data(server_to_client_channel)
+  fmt.println("Server got:", data_from_client[0])
+}
+```
+
+See [example.odin](example.odin) for more a more comprehensive example on how to use this library.

@@ -5,7 +5,7 @@
 I hope to one day actually use this library seriously. Please feel free to try it out and create issues if something does not work.
 
 What it offers:
-- A way to send data reliably or unreliably
+- Reliable and unreliable data transmission
 - Packet fragmentation & reassembly
 - Estimates for RTT, packet loss, and incoming/outgoing bandwidth
 

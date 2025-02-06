@@ -11,11 +11,13 @@ FRAGMENT_SIZE :: 1024
 MAX_FRAGMENT_COUNT :: 256
 MAX_PACKET_SIZE :: MAX_FRAGMENT_COUNT * FRAGMENT_SIZE
 
+@(require_results)
 sequence_greater_than :: proc(s1, s2: u16) -> bool {
   result := ((s1 > s2) && (s1 - s2 <= 32768)) || ((s1 < s2) && (s2 - s1 > 32768))
   return result
 }
 
+@(require_results)
 sequence_less_than :: proc(s1, s2: u16) -> bool {
   result := sequence_greater_than(s2, s1)
   return result
@@ -438,7 +440,7 @@ endpoint_receive_data :: proc(ep: ^Endpoint, packet_data: []u8) -> Error {
 }
 
 endpoint_update :: proc(ep: ^Endpoint) {
-  if time.duration_seconds(time.since(ep.start_measure_time)) >= 1 {
+  if time.duration_seconds(time.since(ep.start_measure_time)) >= 2 {
 
     ep.estimated_received_bandwidth = 0
     ep.estimated_sent_bandwidth = 0

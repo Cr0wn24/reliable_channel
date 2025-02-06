@@ -13,16 +13,19 @@ AVAILABLE_BANDWIDTH_KBPS :: 256
 
 Reliable_ID :: distinct u16
 
+@(private, require_results)
 reliable_id_greater_than :: proc(s1, s2: Reliable_ID) -> bool {
   result := ((s1 > s2) && (s1 - s2 <= 32768)) || ((s1 < s2) && (s2 - s1 > 32768))
   return result
 }
 
+@(private, require_results)
 reliable_id_less_than :: proc(s1, s2: Reliable_ID) -> bool {
   result := reliable_id_greater_than(s2, s1)
   return result
 }
 
+@(private, require_results)
 reliable_id_match :: proc(s1, s2: Reliable_ID) -> bool {
   result := s1 == s2
   return result
@@ -69,6 +72,7 @@ Slice_Ack_Packet :: struct {
   acked: [2]u128,
 }
 
+@(private)
 add_crc32_to_packet :: proc(packet_data: []u8) {
   packet_base := cast(^Base_Packet)raw_data(packet_data)
   packet_base.crc32 = hash.crc32(packet_data[size_of(u32):len(packet_data)-size_of(u32)], seed = PROTOCOL_ID)
@@ -76,6 +80,7 @@ add_crc32_to_packet :: proc(packet_data: []u8) {
   last_crc32^ = packet_base.crc32
 }
 
+@(private, require_results)
 make_packet :: proc(kind: Packet_Kind, data: []u8 = {}, allocator := context.temp_allocator, loc := #caller_location) -> []u8 {
 
   packet_size := 0
@@ -95,6 +100,7 @@ make_packet :: proc(kind: Packet_Kind, data: []u8 = {}, allocator := context.tem
   return packet_data
 }
 
+@(private, require_results)
 get_packet_payload :: proc(kind: Packet_Kind, packet_data: []u8) -> []u8 {
 
   packet_size := 0
@@ -129,6 +135,7 @@ Chunk_Sender :: struct {
   chunk_data: [MAX_CHUNK_SIZE]u8,
 }
 
+@(private, require_results)
 chunk_sender_make_slice_packet :: proc(chunk_sender: ^Chunk_Sender, slice_id: u8, reliable_id: Reliable_ID, allocator := context.temp_allocator, loc := #caller_location) -> []u8 {
   slice_size := 0
   if (chunk_sender.chunk_size - (u32(slice_id) * SLICE_SIZE)) < SLICE_SIZE {
@@ -162,6 +169,7 @@ Chunk_Receiver :: struct {
   chunk_data: [MAX_CHUNK_SIZE]u8,
 }
 
+@(private, require_results)
 chunk_receiver_make_ack_packet :: proc(chunk_receiver: ^Chunk_Receiver, reliable_id: Reliable_ID) -> []u8 {
 
   packet_data := make_packet(.Slice_Ack, allocator = context.temp_allocator)
@@ -212,11 +220,13 @@ Channel :: struct {
   send_callback: Send_Data_Callback,
 }
 
+@(private)
 channel_on_send_data :: proc(endpoint: ^ack.Endpoint, packet_data: []u8) {
   channel := cast(^Channel)endpoint.user_data
   channel.send_callback(channel, packet_data)
 }
 
+@(private, require_results)
 channel_on_receive_data :: proc(endpoint: ^ack.Endpoint, sequence: u16, packet_data: []u8) -> bool {
   channel := cast(^Channel)endpoint.user_data
   base_packet := cast(^Base_Packet)raw_data(packet_data)
@@ -340,6 +350,7 @@ channel_on_receive_data :: proc(endpoint: ^ack.Endpoint, sequence: u16, packet_d
   return true
 }
 
+@(require_results)
 channel_open :: proc(on_send_callback: Send_Data_Callback) -> ^Channel {
   result := new(Channel, context.allocator)
   result.allocator = context.allocator
@@ -366,6 +377,7 @@ channel_close :: proc(channel: ^Channel) {
   free(channel, channel.allocator)
 }
 
+@(private)
 channel_send_reliable_packet_immediate :: proc(channel: ^Channel, packet: ^Reliable_Packet_Buffer_Entry) {
   assert(len(packet.data) <= MAX_CHUNK_SIZE)
   num_slices := (len(packet.data) / SLICE_SIZE_CRITICAL_VALUE) + (((len(packet.data) % SLICE_SIZE_CRITICAL_VALUE) != 0) ? 1 : 0)
@@ -406,6 +418,7 @@ channel_send_reliable_packet_immediate :: proc(channel: ^Channel, packet: ^Relia
   }
 }
 
+@(private)
 channel_push_reliable_data :: proc(channel: ^Channel, data: []u8) {
   // TODO(hampus): Make sure that the receiver actually has space
   // in their reliable message buffer to buffer this message
@@ -509,11 +522,13 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
   }
 }
 
+@(require_results)
 channel_get_received_data :: proc(channel: ^Channel) -> [][]u8 {
   result := channel.received_data[:]
   return result
 }
 
+@(private, require_results)
 channel_can_send_next_reliable_packet :: proc(channel: ^Channel) -> bool {
   result := false
   if channel.reliable_packet_buffer_read_pos < channel.reliable_packet_buffer_write_pos {
@@ -525,6 +540,7 @@ channel_can_send_next_reliable_packet :: proc(channel: ^Channel) -> bool {
   return result
 }
 
+@(private)
 channel_send_next_reliable_packet :: proc(channel: ^Channel) {
   entry := &channel.reliable_packet_buffer[channel.reliable_packet_buffer_read_pos%len(channel.reliable_packet_buffer)]
   channel_send_reliable_packet_immediate(channel, entry)
@@ -537,6 +553,7 @@ Perf_Stats :: struct {
   estimated_received_bandwidth: f32,
 }
 
+@(require_results)
 channel_get_perf_stats :: proc(channel: ^Channel) -> Perf_Stats {
   result := Perf_Stats {
     estimated_packet_loss = channel.endpoint.estimated_packet_loss,

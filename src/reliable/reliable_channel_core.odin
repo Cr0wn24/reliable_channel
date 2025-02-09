@@ -503,6 +503,7 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
               clear(&entry.past_sequences)
               entry.data = nil
               channel.reliable_packet_buffer_read_pos += 1
+              if channel_can_send_next_reliable_packet(channel) do channel_send_next_reliable_packet(channel)
             }
           }
 
@@ -510,7 +511,6 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
             channel_send_reliable_packet_immediate(channel, entry)
           }
         }
-
       }
     }
   }

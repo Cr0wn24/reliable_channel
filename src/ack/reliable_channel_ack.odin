@@ -440,7 +440,7 @@ endpoint_receive_data :: proc(ep: ^Endpoint, packet_data: []u8) -> Error {
 }
 
 endpoint_update :: proc(ep: ^Endpoint) {
-  if time.duration_seconds(time.since(ep.start_measure_time)) >= 2 {
+  if time.duration_seconds(time.since(ep.start_measure_time)) >= 1 {
 
     ep.estimated_received_bandwidth = 0
     ep.estimated_sent_bandwidth = 0

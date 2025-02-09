@@ -121,6 +121,7 @@ Reliable_Packet_Buffer_Entry :: struct {
   data: []u8,
   last_send_time: time.Time,
   waiting_for_ack: bool,
+  past_sequences: map[u16]struct{},
 }
 
 Chunk_Sender :: struct {
@@ -408,6 +409,7 @@ channel_send_reliable_packet_immediate :: proc(channel: ^Channel, packet: ^Relia
     packet.waiting_for_ack = true
     packet.last_send_time = time.now()
     packet.sequence = ack.endpoint_get_next_sequence(channel.endpoint)
+    packet.past_sequences[packet.sequence] = {}
     packet_data := make_packet(.Normal, packet.data, allocator = context.temp_allocator)
     normal_packet := cast(^Normal_Packet)raw_data(packet_data)
     normal_packet.is_reliable = true
@@ -491,28 +493,31 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
       entry := &channel.reliable_packet_buffer[channel.reliable_packet_buffer_read_pos%len(channel.reliable_packet_buffer)]
 
       if !chunk_sender.sending {
+        acks := ack.endpoint_get_acks(channel.endpoint)
         if entry.waiting_for_ack{
-          acks := ack.endpoint_get_acks(channel.endpoint)
           for ack in acks {
-            if ack == entry.sequence {
+            _, ack_for_this_packet := entry.past_sequences[ack]
+            if ack_for_this_packet {
               entry.waiting_for_ack = false
               delete(entry.data, channel.allocator)
+              clear(&entry.past_sequences)
               entry.data = nil
               channel.reliable_packet_buffer_read_pos += 1
             }
           }
 
-          if entry.waiting_for_ack && f32(time.duration_milliseconds(time.since(entry.last_send_time))) >= (channel.endpoint.estimated_rtt_ms*1.25) {
+          if entry.waiting_for_ack && f32(time.duration_milliseconds(time.since(entry.last_send_time))) >= (channel.endpoint.estimated_rtt_ms*1.5) {
             channel_send_reliable_packet_immediate(channel, entry)
           }
         }
+
       }
     }
   }
 
   ack.endpoint_clear_acks(channel.endpoint)
 
-  if f32(time.duration_milliseconds(time.since(channel.last_keep_alive_send_time))) >= channel.endpoint.estimated_rtt_ms/2 {
+  if f32(time.duration_milliseconds(time.since(channel.last_keep_alive_send_time))) >= 100 {
     packet_data := make_packet(.Keep_Alive, allocator = context.temp_allocator)
     packet := cast(^Keep_Alive_Packet)raw_data(packet_data)
     add_crc32_to_packet(packet_data)

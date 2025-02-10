@@ -29,15 +29,15 @@ Message_Kind :: enum {
   Ack,
 }
 
-Message_Base :: struct {
+Message_Base :: struct #packed {
   kind: Message_Kind,
 }
 
-Reliable_Message :: struct {
+Reliable_Message :: struct #packed {
   using base: Message_Base,
 }
 
-Fragment_Message :: struct {
+Fragment_Message :: struct #packed {
   using base: Message_Base,
   message_id: u16,
   fragment_id: u8,
@@ -45,13 +45,13 @@ Fragment_Message :: struct {
   fragment_size: u16,
 }
 
-Ack_Message :: struct {
+Ack_Message :: struct #packed {
   using base: Message_Base,
   message_id: u16,
   acked: [2]u128,
 }
 
-Unreliable_Message :: struct {
+Unreliable_Message :: struct #packed {
   using base: Message_Base,
 }
 
@@ -480,8 +480,11 @@ channel_on_receive_callback :: proc(endpoint: ^ack.Endpoint, sequence: u16, mess
         assert(err == nil)
 
         if chunk_receiver.num_received_fragments == chunk_receiver.num_fragments {
-          cloned_data := slice.clone(chunk_receiver.chunk_data[:chunk_receiver.chunk_size], context.temp_allocator)
-          append(&channel.received_data, cloned_data)
+          msg_data := slice.clone(chunk_receiver.chunk_data[:chunk_receiver.chunk_size], context.allocator)
+          received_message: Received_Message
+          received_message.data = msg_data
+          received_message.msg_id = chunk_receiver.message_id
+          channel.received_messages[chunk_receiver.message_id%len(channel.received_messages)] = received_message
           chunk_receiver.status = .Ready_To_Receive_New_Chunk
         }
       }
@@ -586,6 +589,7 @@ chunk_sender_make_fragment_packet :: proc(chunk_sender: ^Chunk_Sender, fragment_
   fragment_packet.fragment_id = u8(fragment_id)
   fragment_packet.num_fragments = u8(chunk_sender.num_fragments)
   fragment_packet.fragment_size = u16(fragment_size)
+  copy(packet_data[size_of(Fragment_Message):], message_queue_entry.data[int(fragment_id)*FRAGMENT_SIZE:int(fragment_id)*FRAGMENT_SIZE+fragment_size])
 
   return packet_data
 }

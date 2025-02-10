@@ -26,6 +26,7 @@ Channel_Data :: struct {
   remote_address: net.Endpoint,
 }
 
+@test
 sending_small_reliable_packets :: proc(t: ^testing.T) {
 
   on_send_data :: proc(channel: ^rc.Channel, packet_data: []u8) {
@@ -163,7 +164,7 @@ sending_large_reliable_packets :: proc(t: ^testing.T) {
   next_expected_idx0 := 0
   next_expected_idx1 := 0
 
-  send_count := 5
+  send_count := 8
 
   idx := 0
   dt: f32 = 0.33
@@ -220,8 +221,6 @@ sending_large_reliable_packets :: proc(t: ^testing.T) {
       break
     }
 
-    time.sleep(time.Millisecond * 5)
-
     free_all(context.temp_allocator)
 
     idx += 1
@@ -231,6 +230,7 @@ sending_large_reliable_packets :: proc(t: ^testing.T) {
   }
 }
 
+@test
 sending_small_and_large_reliable_packets :: proc(t: ^testing.T) {
 
   on_send_data :: proc(channel: ^rc.Channel, packet_data: []u8) {
@@ -269,7 +269,7 @@ sending_small_and_large_reliable_packets :: proc(t: ^testing.T) {
   next_expected_idx0 := 0
   next_expected_idx1 := 0
 
-  send_count := 5
+  send_count := 16
 
   idx := 0
   dt: f32 = 0.33
@@ -325,8 +325,6 @@ sending_small_and_large_reliable_packets :: proc(t: ^testing.T) {
     if next_expected_idx0 == (send_count+1) && next_expected_idx1 == (send_count+1) {
       break
     }
-
-    time.sleep(time.Millisecond * 5)
 
     free_all(context.temp_allocator)
 

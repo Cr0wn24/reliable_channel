@@ -320,7 +320,7 @@ channel_send :: proc(channel: ^Channel, data: []u8, is_reliable := false) {
     assert(!exists, "the message queue is full!")
     channel.message_queue_buffer[channel.next_message_id%len(channel.message_queue_buffer)] = Message_Queue_Entry {
       data = slice.clone(data, allocator = channel.allocator),
-      message_id = channel.next_message_id
+      message_id = channel.next_message_id,
     }
     channel.next_message_id += 1
   } else {
@@ -653,4 +653,22 @@ get_message_payload :: proc(kind: Message_Kind, message_data: []u8) -> []u8 {
   }
 
   return message_data[message_size:len(message_data)-size_of(u32)]
+}
+
+Perf_Stats :: struct {
+  estimated_packet_loss: f32,
+  estimated_rtt_ms: f32,
+  estimated_sent_bandwidth: f32,
+  estimated_received_bandwidth: f32,
+}
+
+@(require_results)
+channel_get_perf_stats :: proc(channel: ^Channel) -> Perf_Stats {
+  result := Perf_Stats {
+    estimated_packet_loss = channel.endpoint.estimated_packet_loss,
+    estimated_rtt_ms = channel.endpoint.estimated_rtt_ms,
+    estimated_sent_bandwidth = channel.endpoint.estimated_sent_bandwidth,
+    estimated_received_bandwidth = channel.endpoint.estimated_received_bandwidth,
+  }
+  return result
 }

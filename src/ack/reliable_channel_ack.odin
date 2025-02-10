@@ -354,10 +354,10 @@ endpoint_receive_data :: proc(ep: ^Endpoint, packet_data: []u8) -> Error {
 
     if ep.receive_callback(ep, packet.sequence, packet_data[size_of(Packet):]) {
 
-      if sequence_greater_than(packet.sequence+1, ep.received_packets_buffer_sequence) {
+      if sequence_greater_than(packet.sequence, ep.received_packets_buffer_sequence) {
         min_idx := ep.received_packets_buffer_sequence
         max_idx := packet.sequence
-        for idx in min_idx..=max_idx {
+        for idx in ep.received_packets_buffer_sequence..<packet.sequence {
           ep.received_packets_buffer[idx % len(ep.received_packets_buffer)] = nil
         }
 
@@ -381,10 +381,10 @@ endpoint_receive_data :: proc(ep: ^Endpoint, packet_data: []u8) -> Error {
       return nil
     }
 
-    if sequence_greater_than(packet.sequence+1, ep.packet_fragment_reassembly_buffer_sequence) {
+    if sequence_greater_than(packet.sequence, ep.packet_fragment_reassembly_buffer_sequence) {
       min_idx := ep.packet_fragment_reassembly_buffer_sequence
       max_idx := packet.sequence
-      for idx in min_idx..=max_idx {
+      for idx in min_idx..<max_idx {
         entry, ok := &ep.packet_fragment_reassembly_buffer[packet.sequence%len(ep.packet_fragment_reassembly_buffer)].?
         if ok {
           if entry.packet_data != nil {

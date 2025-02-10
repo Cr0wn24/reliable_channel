@@ -55,6 +55,7 @@ Channel :: struct {
   endpoint: ^ack.Endpoint,
 
   next_remote_sequence: u16,
+  next_sequence_of_message: u16,
 
   send_callback: Send_Data_Callback,
 
@@ -142,10 +143,8 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
     if len(ids) > 0 {
       sequence := ack.endpoint_get_next_sequence(channel.endpoint)
 
-      previous_sent_packet, ok := channel.unacked_sent_messages[sequence % len(channel.unacked_sent_messages)].?
-      if ok {
-        delete(previous_sent_packet.message_ids)
-        channel.unacked_sent_messages[sequence % len(channel.unacked_sent_messages)] = nil
+      for i in channel.next_sequence_of_message..=sequence {
+        channel_clear_sent_message_slot(channel, i)
       }
 
       message: Sent_Message
@@ -161,6 +160,8 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
 
       err := ack.endpoint_send_data(channel.endpoint, bytes.buffer_to_bytes(&buffer))
       assert(err == nil)
+
+      channel.next_sequence_of_message = sequence+1
     }
   }
 
@@ -173,8 +174,6 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
         channel_clear_message_queue_entry(channel, message_id)
       }
 
-      delete(sent_message.message_ids)
-
       channel_clear_sent_message(channel, ack)
     }
   }
@@ -185,7 +184,6 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
     entry := channel_get_message_queue_entry(channel, message_id)
     if entry == nil {
       channel.next_unacked_message_id = message_id+1
-      log.info(rawptr(channel), channel.next_unacked_message_id)
     } else {
       break
     }
@@ -257,8 +255,18 @@ channel_clear_sent_message :: proc(channel: ^Channel, sequence: u16) {
   sent_message, ok := &channel.unacked_sent_messages[sequence % len(channel.unacked_sent_messages)].?
   if ok {
     if sent_message.sequence == sequence {
+      delete(sent_message.message_ids)
       channel.unacked_sent_messages[sequence % len(channel.unacked_sent_messages)] = nil
     }
+  }
+}
+
+@(private)
+channel_clear_sent_message_slot :: proc(channel: ^Channel, slot: u16) {
+  sent_message, ok := &channel.unacked_sent_messages[slot % len(channel.unacked_sent_messages)].?
+  if ok {
+    delete(sent_message.message_ids)
+    channel.unacked_sent_messages[slot % len(channel.unacked_sent_messages)] = nil
   }
 }
 
@@ -321,7 +329,6 @@ channel_on_receive_callback :: proc(endpoint: ^ack.Endpoint, sequence: u16, mess
     received_msg, ok := &channel.received_messages[channel.next_message_id_to_receive%len(channel.received_messages)].?
     if ok {
       if received_msg.msg_id == channel.next_message_id_to_receive {
-        log.info("received msg id:", rawptr(channel), received_msg.msg_id)
         channel.next_message_id_to_receive = received_msg.msg_id+1
         append(&channel.received_data, slice.clone(received_msg.data, context.temp_allocator))
         delete(received_msg.data, channel.allocator)
@@ -333,8 +340,6 @@ channel_on_receive_callback :: proc(endpoint: ^ack.Endpoint, sequence: u16, mess
       stop = true
     }
   }
-
-  log.info(channel.next_remote_sequence)
 
   return true
 }

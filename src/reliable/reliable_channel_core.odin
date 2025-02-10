@@ -9,8 +9,10 @@ import "core:bytes"
 
 import "../ack"
 
-FRAGMENT_CRITICAL_SIZE :: ack.FRAGMENT_SIZE - size_of(Reliable_Message)
-FRAGMENT_SIZE :: ack.FRAGMENT_SIZE - size_of(Fragment_Message)
+PROTOCOL_ID : u32 : 2
+
+FRAGMENT_CRITICAL_SIZE :: ack.FRAGMENT_SIZE - size_of(Reliable_Message) - size_of(u32)
+FRAGMENT_SIZE :: ack.FRAGMENT_SIZE - size_of(Fragment_Message) - size_of(u32)
 MAX_FRAGMENT_COUNT :: 256
 MAX_CHUNK_SIZE :: MAX_FRAGMENT_COUNT * ack.FRAGMENT_SIZE
 
@@ -31,6 +33,7 @@ Message_Kind :: enum {
 
 Message_Base :: struct #packed {
   kind: Message_Kind,
+  crc32: u32,
 }
 
 Reliable_Message :: struct #packed {
@@ -149,10 +152,10 @@ channel_open :: proc(send_callback: Send_Data_Callback) -> ^Channel {
 
 channel_close :: proc(channel: ^Channel) {
 
-  for maybe_sent_packet in channel.unacked_sent_messages {
-    sent_packet, ok := maybe_sent_packet.?
+  for maybe_sent_message in channel.unacked_sent_messages {
+    sent_message, ok := maybe_sent_message.?
     if ok {
-      delete(sent_packet.message_ids)
+      delete(sent_message.message_ids)
     }
   }
 
@@ -177,27 +180,31 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
   ids := make([dynamic]u16, 0, 128, channel.allocator)
   defer(delete(ids))
 
-  buffer: bytes.Buffer
-  bytes.buffer_init_allocator(&buffer, 0, FRAGMENT_CRITICAL_SIZE+size_of(Reliable_Message), context.temp_allocator)
-  bytes.buffer_write(&buffer, mem.any_to_bytes(Message_Kind.Reliable))
-
   for message_id := channel.next_unacked_message_id; channel_can_send_message_id(channel, message_id); {
+    clear(&ids)
+
+    buffer: bytes.Buffer
+    bytes.buffer_init_allocator(&buffer, 0, FRAGMENT_CRITICAL_SIZE, context.temp_allocator)
+
     for ; channel_can_send_message_id(channel, message_id); message_id += 1 {
       entry := channel_get_message_queue_entry(channel, message_id)
       if entry == nil {
         continue
       }
 
-      if len(entry.data) > FRAGMENT_CRITICAL_SIZE && !entry.has_been_pushed_to_chunk_sender {
-        assert(abs(channel.chunk_sender_message_queue_write_pos - channel.chunk_sender_message_queue_read_pos) < len(channel.chunk_sender_message_queue), "chunk queue is full!")
-        channel.chunk_sender_message_queue[channel.chunk_sender_message_queue_write_pos%len(channel.chunk_sender_message_queue)] = message_id
-        channel.chunk_sender_message_queue_write_pos += 1
-        entry.has_been_pushed_to_chunk_sender = true
+      if len(entry.data) > FRAGMENT_CRITICAL_SIZE {
+        if !entry.has_been_pushed_to_chunk_sender {
+          assert(len(entry.data) <= MAX_CHUNK_SIZE, "increase your chunk size!")
+          assert(abs(channel.chunk_sender_message_queue_write_pos - channel.chunk_sender_message_queue_read_pos) < len(channel.chunk_sender_message_queue), "chunk queue is full!")
+          channel.chunk_sender_message_queue[channel.chunk_sender_message_queue_write_pos%len(channel.chunk_sender_message_queue)] = message_id
+          channel.chunk_sender_message_queue_write_pos += 1
+          entry.has_been_pushed_to_chunk_sender = true
+        }
         continue
       }
 
       if (len(entry.data)+size_of(u16)*2) > (bytes.buffer_capacity(&buffer) - bytes.buffer_length(&buffer)) {
-        continue
+        break
       }
 
       if f32(time.duration_milliseconds(time.since(entry.last_send_time))) >= channel.endpoint.estimated_rtt_ms*1.25 {
@@ -215,6 +222,9 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
         channel_clear_sent_message_slot(channel, i)
       }
 
+      message_data := make_message(.Reliable, bytes.buffer_to_bytes(&buffer))
+      add_crc32_to_message(message_data)
+
       message: Sent_Message
       message.sequence = sequence
       message.message_ids = slice.clone(ids[:], channel.allocator)
@@ -226,7 +236,7 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
         entry.last_send_time = now_time
       }
 
-      err := ack.endpoint_send_data(channel.endpoint, bytes.buffer_to_bytes(&buffer))
+      err := ack.endpoint_send_data(channel.endpoint, message_data)
       assert(err == nil)
 
       channel.next_sequence_of_message = sequence+1
@@ -250,9 +260,9 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
         chunk_sender.status = .Sending
 
         for fragment_id in 0..<chunk_sender.num_fragments {
-          packet_data := chunk_sender_make_fragment_packet(chunk_sender, u8(fragment_id))
+          message_data := chunk_sender_make_fragment_message(chunk_sender, u8(fragment_id))
           chunk_sender.time_last_sent[fragment_id] = time.now()
-          err := ack.endpoint_send_data(channel.endpoint, packet_data)
+          err := ack.endpoint_send_data(channel.endpoint, message_data)
           assert(err == nil)
         }
       }
@@ -269,9 +279,9 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
             break
           }
           if f32(time.duration_milliseconds(time.since(chunk_sender.time_last_sent[fragment_id]))) >= (channel.endpoint.estimated_rtt_ms*1.25) {
-            packet_data := chunk_sender_make_fragment_packet(chunk_sender, u8(fragment_id), allocator = context.temp_allocator)
+            message_data := chunk_sender_make_fragment_message(chunk_sender, u8(fragment_id), allocator = context.temp_allocator)
             chunk_sender.time_last_sent[fragment_id] = time.now()
-            err := ack.endpoint_send_data(channel.endpoint, packet_data)
+            err := ack.endpoint_send_data(channel.endpoint, message_data)
             assert(err == nil)
           }
         }
@@ -314,11 +324,9 @@ channel_send :: proc(channel: ^Channel, data: []u8, is_reliable := false) {
     }
     channel.next_message_id += 1
   } else {
-    buffer: bytes.Buffer
-    bytes.buffer_init_allocator(&buffer, 0, len(data)+size_of(Unreliable_Message), context.temp_allocator)
-    bytes.buffer_write(&buffer, mem.any_to_bytes(Message_Kind.Unreliable))
-    bytes.buffer_write(&buffer, data)
-    err := ack.endpoint_send_data(channel.endpoint, bytes.buffer_to_bytes(&buffer))
+    message_data := make_message(.Unreliable, data)
+    add_crc32_to_message(message_data)
+    err := ack.endpoint_send_data(channel.endpoint, message_data)
     assert(err == nil)
   }
 }
@@ -388,35 +396,27 @@ channel_clear_sent_message_slot :: proc(channel: ^Channel, slot: u16) {
 channel_on_receive_callback :: proc(endpoint: ^ack.Endpoint, sequence: u16, message_data: []u8) -> bool {
   channel := cast(^Channel)endpoint.user_data
 
-  buffer: bytes.Buffer
-  bytes.buffer_init_allocator(&buffer, 0, len(message_data), context.temp_allocator)
-  bytes.buffer_write(&buffer, message_data)
+  message_data := message_data
 
-  message_kind: Message_Kind
+  base_message := cast(^Message_Base)raw_data(message_data)
 
-  bytes.buffer_read(&buffer, mem.any_to_bytes(message_kind))
-
-  switch message_kind {
+  switch base_message.kind {
     case .Ack:
+    assert(len(message_data) >= size_of(Ack_Message))
+    ack_message := cast(^Ack_Message)raw_data(message_data)
     if ack.sequence_greater_than(sequence, channel.next_remote_sequence-1) {
       channel.next_remote_sequence = sequence+1
     }
     chunk_sender := &channel.chunk_sender
     if chunk_sender.status == .Sending {
-      packet: Ack_Message
-      message_id: u16
-      acked: [2]u128
-      n, err := bytes.buffer_read(&buffer, mem.any_to_bytes(packet.message_id))
-      assert(err == nil && n == size_of(packet.message_id))
-      n, err = bytes.buffer_read(&buffer, mem.any_to_bytes(packet.acked))
-      assert(err == nil && n == size_of(packet.acked))
-      if packet.message_id == chunk_sender.message_queue_entry.message_id  {
+
+      if ack_message.message_id == chunk_sender.message_queue_entry.message_id  {
         for bit: u32 = 0; bit < 128; bit += 1 {
-          if (!chunk_sender.acked[bit] && (packet.acked[0] & (1 << bit)) != 0) {
+          if (!chunk_sender.acked[bit] && (ack_message.acked[0] & (1 << bit)) != 0) {
             chunk_sender.acked[bit] = true
             chunk_sender.num_acked_fragments += 1
           }
-          if (!chunk_sender.acked[128+bit] && (packet.acked[1] & (1 << bit)) != 0) {
+          if (!chunk_sender.acked[128+bit] && (ack_message.acked[1] & (1 << bit)) != 0) {
             chunk_sender.acked[128+bit] = true
             chunk_sender.num_acked_fragments += 1
           }
@@ -430,57 +430,49 @@ channel_on_receive_callback :: proc(endpoint: ^ack.Endpoint, sequence: u16, mess
     }
 
     case .Fragment:
+    assert(len(message_data) >= size_of(Fragment_Message))
+    fragment_message := cast(^Fragment_Message)raw_data(message_data)
     if ack.sequence_greater_than(sequence, channel.next_remote_sequence-1) {
       channel.next_remote_sequence = sequence+1
     }
     chunk_receiver := &channel.chunk_receiver
-    packet: Fragment_Message
-    n, err := bytes.buffer_read(&buffer, mem.any_to_bytes(packet.message_id))
-    assert(err == nil && n == size_of(packet.message_id))
-    n, err = bytes.buffer_read(&buffer, mem.any_to_bytes(packet.fragment_id))
-    assert(err == nil && n == size_of(packet.fragment_id))
-    n, err = bytes.buffer_read(&buffer, mem.any_to_bytes(packet.num_fragments))
-    assert(err == nil && n == size_of(packet.num_fragments))
-    n, err = bytes.buffer_read(&buffer, mem.any_to_bytes(packet.fragment_size))
-    assert(err == nil && n == size_of(packet.fragment_size))
     switch chunk_receiver.status {
       case .Ready_To_Receive_New_Chunk:
-      if ack.sequence_less_than(packet.message_id, channel.next_message_id_to_receive) {
+      if ack.sequence_less_than(fragment_message.message_id, channel.next_message_id_to_receive) {
         // We have received all the slices but all our acks has
         // not gone through
-        ack_packet := chunk_receiver_make_ack_packet(chunk_receiver, packet.message_id)
-        err := ack.endpoint_send_data(endpoint, ack_packet)
+        ack_message := chunk_receiver_make_ack_message(chunk_receiver, fragment_message.message_id)
+        err := ack.endpoint_send_data(endpoint, ack_message)
         assert(err == nil)
         break
       }
 
       chunk_receiver.chunk_size = 0
-      chunk_receiver.message_id = packet.message_id
+      chunk_receiver.message_id = fragment_message.message_id
       chunk_receiver.num_received_fragments = 0
       chunk_receiver.received = {}
-      chunk_receiver.num_fragments = int(packet.num_fragments)
+      chunk_receiver.num_fragments = int(fragment_message.num_fragments)
       chunk_receiver.status = .Receiving
 
       fallthrough
 
       case .Receiving:
-      if packet.message_id == chunk_receiver.message_id {
-        is_duplicate_fragment := chunk_receiver.received[packet.fragment_id]
+      if fragment_message.message_id == chunk_receiver.message_id {
+        is_duplicate_fragment := chunk_receiver.received[fragment_message.fragment_id]
         if !is_duplicate_fragment {
           chunk_receiver.num_received_fragments += 1
-          chunk_receiver.chunk_size += int(packet.fragment_size)
-          chunk_receiver.received[packet.fragment_id] = true
+          chunk_receiver.chunk_size += int(fragment_message.fragment_size)
+          chunk_receiver.received[fragment_message.fragment_id] = true
 
-          n, err = bytes.buffer_read(&buffer, chunk_receiver.chunk_data[u32(packet.fragment_id)*FRAGMENT_SIZE:(u32(packet.fragment_id)+1)*FRAGMENT_SIZE])
-          assert(err == nil)
+          copy(chunk_receiver.chunk_data[u32(fragment_message.fragment_id)*FRAGMENT_SIZE:(u32(fragment_message.fragment_id)+1)*FRAGMENT_SIZE], get_message_payload(.Fragment, message_data))
         }
 
-        ack_packet := chunk_receiver_make_ack_packet(chunk_receiver, chunk_receiver.message_id)
-        err := ack.endpoint_send_data(channel.endpoint, ack_packet)
+        ack_message := chunk_receiver_make_ack_message(chunk_receiver, chunk_receiver.message_id)
+        err := ack.endpoint_send_data(channel.endpoint, ack_message)
         assert(err == nil)
 
         if chunk_receiver.num_received_fragments == chunk_receiver.num_fragments {
-          msg_data := slice.clone(chunk_receiver.chunk_data[:chunk_receiver.chunk_size], context.allocator)
+          msg_data := slice.clone(chunk_receiver.chunk_data[:chunk_receiver.chunk_size], channel.allocator)
           received_message: Received_Message
           received_message.data = msg_data
           received_message.msg_id = chunk_receiver.message_id
@@ -494,6 +486,11 @@ channel_on_receive_callback :: proc(endpoint: ^ack.Endpoint, sequence: u16, mess
     if ack.sequence_greater_than(sequence, channel.next_remote_sequence-1) {
       channel.next_remote_sequence = sequence+1
     }
+
+    message_payload := get_message_payload(base_message.kind, message_data)
+    buffer: bytes.Buffer
+    bytes.buffer_init_allocator(&buffer, 0, len(message_payload), context.temp_allocator)
+    bytes.buffer_write(&buffer, message_payload)
 
     for bytes.buffer_length(&buffer) > 0 {
       msg_id: u16
@@ -527,8 +524,7 @@ channel_on_receive_callback :: proc(endpoint: ^ack.Endpoint, sequence: u16, mess
     }
     channel.next_remote_sequence = sequence+1
 
-    data := slice.clone(message_data[size_of(Unreliable_Message):], context.temp_allocator)
-    append(&channel.received_data, data)
+    append(&channel.received_data, slice.clone(get_message_payload(.Unreliable, message_data), context.temp_allocator))
   }
 
   stop := false
@@ -573,7 +569,7 @@ get_next_chunk_message_in_queue :: proc(channel: ^Channel) -> ^Message_Queue_Ent
 }
 
 @(private, require_results)
-chunk_sender_make_fragment_packet :: proc(chunk_sender: ^Chunk_Sender, fragment_id: u8, allocator := context.temp_allocator, loc := #caller_location) -> []u8 {
+chunk_sender_make_fragment_message :: proc(chunk_sender: ^Chunk_Sender, fragment_id: u8, allocator := context.temp_allocator, loc := #caller_location) -> []u8 {
   fragment_size := 0
   message_queue_entry := chunk_sender.message_queue_entry
   if (len(message_queue_entry.data) - (int(fragment_id) * FRAGMENT_SIZE)) < FRAGMENT_SIZE {
@@ -582,37 +578,79 @@ chunk_sender_make_fragment_packet :: proc(chunk_sender: ^Chunk_Sender, fragment_
     fragment_size = FRAGMENT_SIZE
   }
 
-  packet_data := make([]u8, fragment_size + size_of(Fragment_Message), allocator, loc)
-  fragment_packet := cast(^Fragment_Message)raw_data(packet_data)
-  fragment_packet.kind = .Fragment
-  fragment_packet.message_id = message_queue_entry.message_id
-  fragment_packet.fragment_id = u8(fragment_id)
-  fragment_packet.num_fragments = u8(chunk_sender.num_fragments)
-  fragment_packet.fragment_size = u16(fragment_size)
-  copy(packet_data[size_of(Fragment_Message):], message_queue_entry.data[int(fragment_id)*FRAGMENT_SIZE:int(fragment_id)*FRAGMENT_SIZE+fragment_size])
+  message_data := make_message(.Fragment, message_queue_entry.data[int(fragment_id)*FRAGMENT_SIZE:int(fragment_id)*FRAGMENT_SIZE+fragment_size])
+  fragment_message := cast(^Fragment_Message)raw_data(message_data)
+  fragment_message.message_id = message_queue_entry.message_id
+  fragment_message.fragment_id = u8(fragment_id)
+  fragment_message.num_fragments = u8(chunk_sender.num_fragments)
+  fragment_message.fragment_size = u16(fragment_size)
 
-  return packet_data
+  add_crc32_to_message(message_data)
+  return message_data
 }
 
 @(private, require_results)
-chunk_receiver_make_ack_packet :: proc(chunk_receiver: ^Chunk_Receiver, message_id: u16) -> []u8 {
+chunk_receiver_make_ack_message :: proc(chunk_receiver: ^Chunk_Receiver, message_id: u16) -> []u8 {
 
-  packet_data := make([]u8, size_of(Ack_Message), context.temp_allocator)
-  packet := cast(^Ack_Message)raw_data(packet_data)
-  packet.kind = .Ack
-  packet.message_id = message_id
+  message_data := make_message(.Ack)
+  message := cast(^Ack_Message)raw_data(message_data)
+  message.message_id = message_id
 
   for fragment_id in 0..<min(128, chunk_receiver.num_fragments) {
     if chunk_receiver.received[fragment_id] {
-      packet.acked[0] |= 1 << u32(fragment_id)
+      message.acked[0] |= 1 << u32(fragment_id)
     }
   }
 
   for fragment_id in 128..<chunk_receiver.num_fragments {
     if chunk_receiver.received[fragment_id] {
-      packet.acked[1] |= 1 << (u32(fragment_id) - 128)
+      message.acked[1] |= 1 << (u32(fragment_id) - 128)
     }
   }
 
-  return packet_data
+  add_crc32_to_message(message_data)
+  return message_data
+}
+
+@(private)
+add_crc32_to_message :: proc(message_data: []u8) {
+  message_base := cast(^Message_Base)raw_data(message_data)
+  message_base.crc32 = hash.crc32(message_data[size_of(u32):len(message_data)-size_of(u32)], seed = PROTOCOL_ID)
+  last_crc32 := cast(^u32)raw_data(message_data[len(message_data)-size_of(u32):])
+  last_crc32^ = message_base.crc32
+}
+
+@(private, require_results)
+make_message :: proc(kind: Message_Kind, data: []u8 = {}, allocator := context.temp_allocator, loc := #caller_location) -> []u8 {
+
+  message_size := 0
+
+  switch kind {
+    case .Unreliable: message_size = size_of(Unreliable_Message)
+    case .Reliable: message_size = size_of(Reliable_Message)
+    case .Fragment: message_size = size_of(Fragment_Message)
+    case .Ack: message_size = size_of(Ack_Message)
+  }
+
+  message_data := make([]u8, message_size + len(data) + size_of(u32), allocator = allocator)
+
+  base_message := cast(^Message_Base)raw_data(message_data)
+  base_message.kind = kind
+  copy(message_data[message_size:len(message_data)-size_of(u32)], data)
+  return message_data
+}
+
+@(private, require_results)
+get_message_payload :: proc(kind: Message_Kind, message_data: []u8) -> []u8 {
+
+  message_size := 0
+
+  switch kind {
+    case .Unreliable: message_size = size_of(Unreliable_Message)
+    case .Reliable: message_size = size_of(Reliable_Message)
+    case .Fragment: message_size = size_of(Fragment_Message)
+    case .Ack: message_size = size_of(Ack_Message)
+  }
+
+  return message_data[message_size:len(message_data)-size_of(u32)]
 }

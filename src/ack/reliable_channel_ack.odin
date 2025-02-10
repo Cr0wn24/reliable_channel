@@ -67,9 +67,11 @@ Endpoint :: struct {
   estimated_sent_bandwidth: f32,
   estimated_received_bandwidth: f32,
 
+  num_sent_packets: int,
+
   rtt_accumulator_ms: f32,
 
-  num_sent_packets: int,
+  sent_packets_accumulator: int,
   num_acked_packets: int,
   num_bytes_sent: int,
   num_bytes_received: int,
@@ -182,7 +184,7 @@ endpoint_reset :: proc(ep: ^Endpoint) {
   ep.estimated_packet_loss = 0
   ep.estimated_rtt_ms = 0
   ep.rtt_accumulator_ms = 0
-  ep.num_sent_packets = 0
+  ep.sent_packets_accumulator = 0
   ep.num_acked_packets = 0
 
   for &elem in ep.received_packets_buffer {
@@ -297,7 +299,7 @@ endpoint_send_data :: proc(ep: ^Endpoint, data: []u8) -> (err: Error) {
       }
     }
 
-    ep.num_sent_packets += 1
+    ep.sent_packets_accumulator += 1
     ep.sequence += 1
   } else {
     return .Empty_Data
@@ -445,8 +447,10 @@ endpoint_update :: proc(ep: ^Endpoint) {
     ep.estimated_received_bandwidth = 0
     ep.estimated_sent_bandwidth = 0
 
-    if ep.num_sent_packets != 0 {
-      ep.estimated_packet_loss = 1 - f32(ep.num_acked_packets) / f32(ep.num_sent_packets)
+    ep.num_sent_packets = ep.sent_packets_accumulator
+
+    if ep.sent_packets_accumulator != 0 {
+      ep.estimated_packet_loss = 1 - f32(ep.num_acked_packets) / f32(ep.sent_packets_accumulator)
       ep.estimated_packet_loss = clamp(0, ep.estimated_packet_loss, 1)
     }
 
@@ -465,7 +469,7 @@ endpoint_update :: proc(ep: ^Endpoint) {
     ep.num_bytes_sent = 0
     ep.num_bytes_received = 0
     ep.num_acked_packets = 0
-    ep.num_sent_packets = 0
+    ep.sent_packets_accumulator = 0
     ep.rtt_accumulator_ms = 0
     ep.start_measure_time = time.now()
   }

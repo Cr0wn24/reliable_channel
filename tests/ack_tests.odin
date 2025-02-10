@@ -23,7 +23,6 @@ on_send_data :: proc(endpoint: ^ack.Endpoint, packet_data: []u8) {
   }
 }
 
-@(test)
 sending_small_packets :: proc(t: ^testing.T) {
 
   test_context := new(Test_Context, context.allocator)
@@ -81,7 +80,6 @@ sending_small_packets :: proc(t: ^testing.T) {
   delete(test_context.expected_acks)
 }
 
-@(test)
 sending_large_packets :: proc(t: ^testing.T) {
 
   test_context := new(Test_Context, context.allocator)

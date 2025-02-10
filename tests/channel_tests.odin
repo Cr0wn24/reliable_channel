@@ -26,7 +26,6 @@ Channel_Data :: struct {
   remote_address: net.Endpoint,
 }
 
-@test
 sending_small_reliable_packets :: proc(t: ^testing.T) {
 
   on_send_data :: proc(channel: ^rc.Channel, packet_data: []u8) {
@@ -125,6 +124,7 @@ sending_small_reliable_packets :: proc(t: ^testing.T) {
   }
 }
 
+@test
 sending_large_reliable_packets :: proc(t: ^testing.T) {
 
   on_send_data :: proc(channel: ^rc.Channel, packet_data: []u8) {

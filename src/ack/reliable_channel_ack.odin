@@ -121,7 +121,7 @@ error_string :: proc(err: Error) -> string {
     switch e {
       case .Invalid_Send_Callback: return "invalid send callback"
       case .Invalid_Receive_Callback: return "invalid receive callback"
-      case .Empty_Data: return "tried to send empty_data"
+      case .Empty_Data: return "tried to send empty data"
     }
   }
 
@@ -345,7 +345,7 @@ endpoint_receive_data :: proc(ep: ^Endpoint, packet_data: []u8) -> Error {
     // ignore very late packets so they don't override our more recent packets
 
     packet := cast(^Packet)raw_data(packet_data)
-    if int(packet.sequence) < (int(ep.received_packets_buffer_sequence) - len(ep.received_packets_buffer)) {
+    if sequence_less_than(packet.sequence, ep.received_packets_buffer_sequence - len(ep.received_packets_buffer)) {
       log.error("Ignoring stale packet:", packet.sequence)
       return nil
     }
@@ -371,7 +371,7 @@ endpoint_receive_data :: proc(ep: ^Endpoint, packet_data: []u8) -> Error {
       ep.received_packets_buffer[packet.sequence%len(ep.received_packets_buffer)] = received_packet
 
     } else {
-      log.info("Packet", packet.sequence, " was not valid. Ignoring it")
+      log.info("Packet", packet.sequence, "was not valid. Ignoring it")
     }
 
   } else if packet_kind == .Fragment {

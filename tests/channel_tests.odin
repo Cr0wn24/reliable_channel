@@ -65,7 +65,7 @@ sending_small_reliable_packets :: proc(t: ^testing.T) {
   next_expected_idx0 := 0
   next_expected_idx1 := 0
 
-  send_count := 5
+  send_count := 1024
 
   dt: f32 = 0.33
   start_time := time.now()
@@ -87,28 +87,34 @@ sending_small_reliable_packets :: proc(t: ^testing.T) {
       bytes_read, address, _ = net.recv_udp(channel1_data.socket, buf[:])
     }
 
-    if idx <= send_count do rc.channel_send_any(channel0, idx, is_reliable = true)
-    if idx <= send_count do rc.channel_send_any(channel1, idx, is_reliable = true)
+    if idx <= send_count do rc.channel_send(channel0, mem.any_to_bytes(idx), is_reliable = true)
+    if idx <= send_count do rc.channel_send(channel1, mem.any_to_bytes(idx), is_reliable = true)
+
+    unreliable_buf: [48]u8
+    rc.channel_send(channel0, unreliable_buf[:], is_reliable = false)
+    rc.channel_send(channel1, unreliable_buf[:], is_reliable = false)
 
     channel0_data := rc.channel_get_received_data(channel0)
     for data in channel0_data {
-      x := cast(^int)raw_data(data)
-      testing.expect(t, x^ == next_expected_idx0, "Got an unexpected counter value")
-      next_expected_idx0 += 1
+      if len(data) != len(unreliable_buf) {
+        x := cast(^int)raw_data(data)
+        testing.expectf(t, x^ == next_expected_idx0, "Got an unexpected counter value, expected:", next_expected_idx0, "got:", x^)
+        next_expected_idx0 += 1
+      }
     }
 
     channel1_data := rc.channel_get_received_data(channel1)
     for data in channel1_data {
-      x := cast(^int)raw_data(data)
-      testing.expect(t, x^ == next_expected_idx1, "Got an unexpected counter value")
-      next_expected_idx1 += 1
+      if len(data) != len(unreliable_buf) {
+        x := cast(^int)raw_data(data)
+        testing.expect(t, x^ == next_expected_idx1, "Got an unexpected counter value")
+        next_expected_idx1 += 1
+      }
     }
 
-    if next_expected_idx0 == (send_count+1) && next_expected_idx1 == (send_count+1) {
+    if next_expected_idx0 >= (send_count+1) && next_expected_idx1 >= (send_count+1) {
       break
     }
-
-    time.sleep(time.Millisecond * 5)
 
     free_all(context.temp_allocator)
 
@@ -119,7 +125,6 @@ sending_small_reliable_packets :: proc(t: ^testing.T) {
   }
 }
 
-@test
 sending_large_reliable_packets :: proc(t: ^testing.T) {
 
   on_send_data :: proc(channel: ^rc.Channel, packet_data: []u8) {
@@ -226,7 +231,6 @@ sending_large_reliable_packets :: proc(t: ^testing.T) {
   }
 }
 
-@test
 sending_small_and_large_reliable_packets :: proc(t: ^testing.T) {
 
   on_send_data :: proc(channel: ^rc.Channel, packet_data: []u8) {

@@ -133,6 +133,8 @@ Channel :: struct {
 
   received_data: [dynamic][]u8,
 
+  ids: [dynamic]u16,
+
   user_data: rawptr,
 }
 
@@ -146,6 +148,8 @@ channel_open :: proc(send_callback: Send_Data_Callback) -> ^Channel {
   channel.endpoint, err = ack.endpoint_open(channel_on_send_callback, channel_on_receive_callback)
   channel.endpoint.user_data = rawptr(channel)
   assert(err == nil)
+
+  channel.ids = make([dynamic]u16, 0, 1024, channel.allocator)
 
   return channel
 }
@@ -169,6 +173,8 @@ channel_close :: proc(channel: ^Channel) {
   err := ack.endpoint_close(channel.endpoint)
   assert(err == nil)
 
+  delete(channel.ids)
+
   free(channel, channel.allocator)
 }
 
@@ -177,11 +183,9 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
 
   channel.received_data = make([dynamic][]u8, 0, 1024, context.temp_allocator)
 
-  ids := make([dynamic]u16, 0, 512, channel.allocator)
-  defer(delete(ids))
 
   for message_id := channel.next_unacked_message_id; channel_can_send_message_id(channel, message_id); {
-    clear(&ids)
+    clear(&channel.ids)
 
     buffer: bytes.Buffer
     bytes.buffer_init_allocator(&buffer, 0, FRAGMENT_CRITICAL_SIZE, context.temp_allocator)
@@ -211,11 +215,11 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
         bytes.buffer_write(&buffer, mem.any_to_bytes(message_id))
         bytes.buffer_write(&buffer, mem.any_to_bytes(u16(len(entry.data))))
         bytes.buffer_write(&buffer, entry.data)
-        append(&ids, message_id)
+        append(&channel.ids, message_id)
       }
     }
 
-    if len(ids) > 0 {
+    if len(channel.ids) > 0 {
       sequence := ack.endpoint_get_next_sequence(channel.endpoint)
 
       for i in channel.next_sequence_of_message..=sequence {
@@ -227,11 +231,11 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
 
       message: Sent_Message
       message.sequence = sequence
-      message.message_ids = slice.clone(ids[:], channel.allocator)
+      message.message_ids = slice.clone(channel.ids[:], channel.allocator)
       channel.unacked_sent_messages[sequence % len(channel.unacked_sent_messages)] = message
 
       now_time := time.now()
-      for id in ids {
+      for id in channel.ids {
         entry := channel_get_message_queue_entry(channel, id)
         entry.last_send_time = now_time
       }

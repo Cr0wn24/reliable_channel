@@ -144,7 +144,6 @@ endpoint_open :: proc(send_callback: Send_Data_Callback, receive_callback: Recei
   result.acks = make([dynamic]u16, 0, 1024, result.allocator) or_return
   result.send_callback = send_callback
   result.receive_callback = receive_callback
-  result.estimated_rtt_ms = 1000
 
   return
 }

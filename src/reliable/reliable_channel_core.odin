@@ -32,8 +32,8 @@ Message_Kind :: enum {
 }
 
 Message_Base :: struct #packed {
-  kind: Message_Kind,
   crc32: u32,
+  kind: Message_Kind,
 }
 
 Reliable_Message :: struct #packed {
@@ -226,9 +226,6 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
         channel_clear_sent_message_slot(channel, i)
       }
 
-      message_data := make_message(.Reliable, bytes.buffer_to_bytes(&buffer))
-      add_crc32_to_message(message_data)
-
       message: Sent_Message
       message.sequence = sequence
       message.message_ids = slice.clone(channel.ids[:], channel.allocator)
@@ -240,6 +237,8 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
         entry.last_send_time = now_time
       }
 
+      message_data := make_message(.Reliable, bytes.buffer_to_bytes(&buffer))
+      add_crc32_to_message(message_data)
       err := ack.endpoint_send_data(channel.endpoint, message_data)
       assert(err == nil)
 
@@ -403,7 +402,12 @@ channel_on_receive_callback :: proc(endpoint: ^ack.Endpoint, sequence: u16, mess
   message_data := message_data
 
   base_message := cast(^Message_Base)raw_data(message_data)
-
+  crc32 := hash.crc32(message_data[size_of(u32):len(message_data)-size_of(u32)], seed = PROTOCOL_ID)
+  last_crc32 := cast(^u32)raw_data(message_data[len(message_data)-size_of(u32):])
+  if base_message.crc32 != crc32 || last_crc32^ != crc32 {
+    log.error("Got packet with wrong crc32 with sequence:", sequence)
+    return false
+  }
   switch base_message.kind {
     case .Ack:
     assert(len(message_data) >= size_of(Ack_Message))

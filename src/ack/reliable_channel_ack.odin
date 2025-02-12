@@ -64,8 +64,8 @@ Endpoint :: struct {
 
   estimated_packet_loss: f32,
   estimated_rtt_ms: f32,
-  estimated_sent_bandwidth: f32,
-  estimated_received_bandwidth: f32,
+  estimated_sent_bandwidth: u64,
+  estimated_received_bandwidth: u64,
 
   num_sent_packets: int,
 
@@ -460,11 +460,11 @@ endpoint_update :: proc(ep: ^Endpoint) {
     }
 
     if ep.num_bytes_sent != 0 {
-      ep.estimated_sent_bandwidth = f32(ep.num_bytes_sent)
+      ep.estimated_sent_bandwidth = u64(ep.num_bytes_sent)
     }
 
     if ep.num_bytes_received != 0 {
-      ep.estimated_received_bandwidth = f32(ep.num_bytes_received)
+      ep.estimated_received_bandwidth = u64(ep.num_bytes_received)
     }
 
     ep.num_bytes_sent = 0

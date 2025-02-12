@@ -662,8 +662,8 @@ get_message_payload :: proc(kind: Message_Kind, message_data: []u8) -> []u8 {
 Perf_Stats :: struct {
   estimated_packet_loss: f32,
   estimated_rtt_ms: f32,
-  estimated_sent_bandwidth: f32,
-  estimated_received_bandwidth: f32,
+  estimated_sent_bandwidth: u64,
+  estimated_received_bandwidth: u64,
 }
 
 @(require_results)

@@ -452,7 +452,7 @@ endpoint_update :: proc(ep: ^Endpoint) {
 
     if ep.sent_packets_accumulator != 0 {
       ep.estimated_packet_loss = 1 - f32(ep.num_acked_packets) / f32(ep.sent_packets_accumulator)
-      ep.estimated_packet_loss = clamp(0, ep.estimated_packet_loss, 1)
+      ep.estimated_packet_loss = clamp(ep.estimated_packet_loss, 0, 1)
     }
 
     if ep.num_acked_packets != 0 {

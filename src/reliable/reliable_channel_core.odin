@@ -177,7 +177,7 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
 
   channel.received_data = make([dynamic][]u8, 0, 1024, context.temp_allocator)
 
-  ids := make([dynamic]u16, 0, 128, channel.allocator)
+  ids := make([dynamic]u16, 0, 512, channel.allocator)
   defer(delete(ids))
 
   for message_id := channel.next_unacked_message_id; channel_can_send_message_id(channel, message_id); {

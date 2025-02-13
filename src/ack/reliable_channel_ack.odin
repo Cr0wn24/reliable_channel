@@ -449,13 +449,13 @@ endpoint_update :: proc(ep: ^Endpoint) {
 
     ep.num_sent_packets = ep.sent_packets_accumulator
 
-    if ep.sent_packets_accumulator != 0 {
-      ep.estimated_packet_loss = 1 - f32(ep.num_acked_packets) / f32(ep.sent_packets_accumulator)
-      ep.estimated_packet_loss = clamp(ep.estimated_packet_loss, 0, 1)
-    }
-
     if ep.num_acked_packets != 0 {
       ep.estimated_rtt_ms = ep.rtt_accumulator_ms / f32(ep.num_acked_packets)
+    }
+
+    if ep.sent_packets_accumulator != 0 {
+      ep.estimated_packet_loss = 1 - f32(ep.num_acked_packets) / (f32(ep.sent_packets_accumulator) - f32(ep.sent_packets_accumulator) * ep.estimated_rtt_ms/2/1000)
+      ep.estimated_packet_loss = clamp(ep.estimated_packet_loss, 0, 1)
     }
 
     if ep.num_bytes_sent != 0 {

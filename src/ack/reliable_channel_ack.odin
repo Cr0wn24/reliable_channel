@@ -440,6 +440,26 @@ endpoint_receive_data :: proc(ep: ^Endpoint, packet_data: []u8) -> Error {
   return nil
 }
 
+endpoint_num_packets_sent_during_last_rtt :: proc(ep: ^Endpoint) -> (result: int) {
+  for i in 0..<len(ep.sent_packets_buffer) {
+    sequence := ep.sequence - 1 - u16(i)
+    sent_packet, ok := ep.sent_packets_buffer[sequence%len(ep.sent_packets_buffer)].?
+
+    if ok {
+      if sent_packet.sequence == sequence {
+        time_since_send := f32(time.duration_milliseconds(time.since(sent_packet.send_time)))
+        if time_since_send >= ep.estimated_rtt_ms {
+          break
+        }
+
+        result += 1
+      }
+    }
+
+  }
+  return
+}
+
 endpoint_update :: proc(ep: ^Endpoint) {
   duration_seconds_since_last_measure_time := time.duration_seconds(time.since(ep.start_measure_time))
   if duration_seconds_since_last_measure_time >= 1 {
@@ -454,7 +474,9 @@ endpoint_update :: proc(ep: ^Endpoint) {
     }
 
     if ep.sent_packets_accumulator != 0 {
-      ep.estimated_packet_loss = 1 - f32(ep.num_acked_packets) / (f32(ep.sent_packets_accumulator) - f32(ep.sent_packets_accumulator) * ep.estimated_rtt_ms/2/1000)
+      // since we can't possibly have received acks for the packets sent during the last
+      // RTT, we will remove them
+      ep.estimated_packet_loss = 1 - f32(ep.num_acked_packets) / f32(ep.sent_packets_accumulator - endpoint_num_packets_sent_during_last_rtt(ep))
       ep.estimated_packet_loss = clamp(ep.estimated_packet_loss, 0, 1)
     }
 

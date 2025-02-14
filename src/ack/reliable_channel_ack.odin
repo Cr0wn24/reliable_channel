@@ -151,8 +151,6 @@ endpoint_open :: proc(send_callback: Send_Data_Callback, receive_callback: Recei
 
   result.rtt_history_buffer = make([dynamic]f64, 0, 4096)
 
-  result.rtt_avg = 1
-
   return
 }
 
@@ -323,6 +321,7 @@ endpoint_send_data :: proc(ep: ^Endpoint, data: []u8) -> (err: Error) {
 @require_results
 endpoint_receive_data :: proc(ep: ^Endpoint, packet_data: []u8) -> Error {
   assert(ep != nil)
+
 
   receive_time := time.now()
 
@@ -500,7 +499,7 @@ endpoint_update :: proc(ep: ^Endpoint) {
       if len(ep.rtt_history_buffer) != 0 {
         ep.rtt_avg = sum_rtt / f64(len(ep.rtt_history_buffer))
       } else {
-        ep.rtt_avg = 1
+        ep.rtt_avg = 0
       }
     }
 

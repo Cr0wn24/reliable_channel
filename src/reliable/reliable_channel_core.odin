@@ -211,7 +211,7 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
         break
       }
 
-      if time.duration_seconds(time.since(entry.last_send_time)) >= channel.endpoint.rtt_avg*1.25 {
+      if time.duration_seconds(time.since(entry.last_send_time)) >= max(0.1, channel.endpoint.rtt_avg*1.25) {
         bytes.buffer_write(&buffer, mem.any_to_bytes(message_id))
         bytes.buffer_write(&buffer, mem.any_to_bytes(u16(len(entry.data))))
         bytes.buffer_write(&buffer, entry.data)
@@ -281,7 +281,7 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
             chunk_sender.current_fragment_id = fragment_id
             break
           }
-          if time.duration_seconds(time.since(chunk_sender.time_last_sent[fragment_id])) >= channel.endpoint.rtt_avg*1.25 {
+          if time.duration_seconds(time.since(chunk_sender.time_last_sent[fragment_id])) >= max(0.1, channel.endpoint.rtt_avg*1.25) {
             message_data := chunk_sender_make_fragment_message(chunk_sender, u8(fragment_id), allocator = context.temp_allocator)
             chunk_sender.time_last_sent[fragment_id] = time.now()
             err := ack.endpoint_send_data(channel.endpoint, message_data)

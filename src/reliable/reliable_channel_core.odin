@@ -211,7 +211,7 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
         break
       }
 
-      if f32(time.duration_milliseconds(time.since(entry.last_send_time))) >= channel.endpoint.estimated_rtt_ms*1.25 {
+      if time.duration_seconds(time.since(entry.last_send_time)) >= channel.endpoint.rtt_avg*1.25 {
         bytes.buffer_write(&buffer, mem.any_to_bytes(message_id))
         bytes.buffer_write(&buffer, mem.any_to_bytes(u16(len(entry.data))))
         bytes.buffer_write(&buffer, entry.data)
@@ -281,7 +281,7 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
             chunk_sender.current_fragment_id = fragment_id
             break
           }
-          if f32(time.duration_milliseconds(time.since(chunk_sender.time_last_sent[fragment_id]))) >= (channel.endpoint.estimated_rtt_ms*1.25) {
+          if time.duration_seconds(time.since(chunk_sender.time_last_sent[fragment_id])) >= channel.endpoint.rtt_avg*1.25 {
             message_data := chunk_sender_make_fragment_message(chunk_sender, u8(fragment_id), allocator = context.temp_allocator)
             chunk_sender.time_last_sent[fragment_id] = time.now()
             err := ack.endpoint_send_data(channel.endpoint, message_data)
@@ -664,19 +664,31 @@ get_message_payload :: proc(kind: Message_Kind, message_data: []u8) -> []u8 {
 }
 
 Perf_Stats :: struct {
-  estimated_packet_loss: f32,
-  estimated_rtt_ms: f32,
-  estimated_sent_bandwidth: u64,
-  estimated_received_bandwidth: u64,
+  packet_loss: f64,
+  rtt_avg: f64,
+  rtt_min: f64,
+  rtt_max: f64,
+  jitter_avg_vs_min_rtt: f64,
+  jitter_max_vs_min_rtt: f64,
+  jitter_stddev_vs_avg_rtt: f64,
+  incoming_bandwidth_kbps: f64,
+  outgoing_bandwidth_kbps: f64,
+  num_sent_packets: int,
 }
 
 @(require_results)
 channel_get_perf_stats :: proc(channel: ^Channel) -> Perf_Stats {
   result := Perf_Stats {
-    estimated_packet_loss = channel.endpoint.estimated_packet_loss,
-    estimated_rtt_ms = channel.endpoint.estimated_rtt_ms,
-    estimated_sent_bandwidth = channel.endpoint.estimated_sent_bandwidth,
-    estimated_received_bandwidth = channel.endpoint.estimated_received_bandwidth,
+    packet_loss = channel.endpoint.packet_loss,
+    rtt_avg = channel.endpoint.rtt_avg,
+    rtt_min = channel.endpoint.rtt_min,
+    rtt_max = channel.endpoint.rtt_max,
+    jitter_avg_vs_min_rtt = channel.endpoint.jitter_avg_vs_min_rtt,
+    jitter_max_vs_min_rtt = channel.endpoint.jitter_max_vs_min_rtt,
+    jitter_stddev_vs_avg_rtt = channel.endpoint.jitter_stddev_vs_avg_rtt,
+    incoming_bandwidth_kbps = channel.endpoint.incoming_bandwidth_kbps,
+    outgoing_bandwidth_kbps = channel.endpoint.outgoing_bandwidth_kbps,
+    num_sent_packets = channel.endpoint.num_sent_packets,
   }
   return result
 }

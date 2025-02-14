@@ -6,6 +6,8 @@ import "core:log"
 import "core:time"
 import "core:mem"
 import "core:os"
+import "core:math"
+import "core:math/bits"
 
 FRAGMENT_SIZE :: 1024
 MAX_FRAGMENT_COUNT :: 256
@@ -28,12 +30,15 @@ Receive_Data_Callback :: #type proc(ep: ^Endpoint, sequence: u16, data: []u8) ->
 
 Received_Packet :: struct {
   sequence: u16,
+  size: int,
+  receive_time: time.Time,
 }
 
 Sent_Packet :: struct {
   sequence: u16,
   send_time: time.Time,
   acked: bool,
+  size: int,
 }
 
 Fragment_Packet_Reassembly_Buffer_Entry :: struct {
@@ -51,30 +56,29 @@ Endpoint :: struct {
   receive_callback: Receive_Data_Callback,
 
   received_packets_buffer_sequence: u16,
-  received_packets_buffer: [4096]Maybe(Received_Packet),
+  received_packets_buffer: [512]Maybe(Received_Packet),
 
-  sent_packets_buffer: [4096]Maybe(Sent_Packet),
+  sent_packets_buffer: [512]Maybe(Sent_Packet),
 
   packet_fragment_reassembly_buffer_sequence: u16,
-  packet_fragment_reassembly_buffer: [4096]Maybe(Fragment_Packet_Reassembly_Buffer_Entry),
+  packet_fragment_reassembly_buffer: [512]Maybe(Fragment_Packet_Reassembly_Buffer_Entry),
 
   acks: [dynamic]u16,
 
+  rtt_history_buffer: [dynamic]f64,
+
   start_measure_time: time.Time,
 
-  estimated_packet_loss: f32,
-  estimated_rtt_ms: f32,
-  estimated_sent_bandwidth: u64,
-  estimated_received_bandwidth: u64,
-
+  packet_loss: f64,
+  rtt_avg: f64,
+  rtt_min: f64,
+  rtt_max: f64,
+  jitter_avg_vs_min_rtt: f64,
+  jitter_max_vs_min_rtt: f64,
+  jitter_stddev_vs_avg_rtt: f64,
+  incoming_bandwidth_kbps: f64,
+  outgoing_bandwidth_kbps: f64,
   num_sent_packets: int,
-
-  rtt_accumulator_ms: f32,
-
-  sent_packets_accumulator: int,
-  num_acked_packets: int,
-  num_bytes_sent: int,
-  num_bytes_received: int,
 
   user_data: rawptr,
 
@@ -145,6 +149,10 @@ endpoint_open :: proc(send_callback: Send_Data_Callback, receive_callback: Recei
   result.send_callback = send_callback
   result.receive_callback = receive_callback
 
+  result.rtt_history_buffer = make([dynamic]f64, 0, 4096)
+
+  result.rtt_avg = 1
+
   return
 }
 
@@ -178,13 +186,18 @@ endpoint_reset :: proc(ep: ^Endpoint) {
   ep.packet_fragment_reassembly_buffer = {}
 
   clear(&ep.acks)
+  clear(&ep.rtt_history_buffer)
 
-  ep.start_measure_time = {}
-  ep.estimated_packet_loss = 0
-  ep.estimated_rtt_ms = 0
-  ep.rtt_accumulator_ms = 0
-  ep.sent_packets_accumulator = 0
-  ep.num_acked_packets = 0
+  ep.packet_loss = 0
+  ep.rtt_avg = 0
+  ep.rtt_min = 0
+  ep.rtt_max = 0
+  ep.jitter_avg_vs_min_rtt = 0
+  ep.jitter_max_vs_min_rtt = 0
+  ep.jitter_stddev_vs_avg_rtt = 0
+  ep.incoming_bandwidth_kbps = 0
+  ep.outgoing_bandwidth_kbps = 0
+  ep.num_sent_packets = 0
 
   for &elem in ep.received_packets_buffer {
     elem = nil
@@ -238,13 +251,13 @@ endpoint_send_data :: proc(ep: ^Endpoint, data: []u8) -> (err: Error) {
     // insert a sent packet into sequence buffer, so we later can
     // see if it is acked or not
 
-    sent_packet := Sent_Packet{
+    ep.sent_packets_buffer[sequence%len(ep.sent_packets_buffer)] = Sent_Packet {
       sequence = sequence,
       acked = false,
       send_time = time.now(),
     }
+    sent_packet := &ep.sent_packets_buffer[sequence%len(ep.sent_packets_buffer)].?
 
-    ep.sent_packets_buffer[sequence%len(ep.sent_packets_buffer)] = sent_packet
 
     if fragment_count == 1 {
 
@@ -259,7 +272,7 @@ endpoint_send_data :: proc(ep: ^Endpoint, data: []u8) -> (err: Error) {
       packet.ack = ack
       packet.ack_bits = ack_bits
       ep.send_callback(ep, packet_data)
-      ep.num_bytes_sent += len(packet_data)
+      sent_packet.size += len(packet_data)
     } else if fragment_count > 1 {
 
       // this packet requires multiple fragments, we have to do extra work
@@ -294,11 +307,11 @@ endpoint_send_data :: proc(ep: ^Endpoint, data: []u8) -> (err: Error) {
         // send
 
         ep.send_callback(ep, packet_data)
-        ep.num_bytes_sent += len(packet_data)
+
+      sent_packet.size += len(packet_data)
       }
     }
 
-    ep.sent_packets_accumulator += 1
     ep.sequence += 1
   } else {
     return .Empty_Data
@@ -310,8 +323,6 @@ endpoint_send_data :: proc(ep: ^Endpoint, data: []u8) -> (err: Error) {
 @require_results
 endpoint_receive_data :: proc(ep: ^Endpoint, packet_data: []u8) -> Error {
   assert(ep != nil)
-
-  ep.num_bytes_received += len(packet_data)
 
   receive_time := time.now()
 
@@ -328,8 +339,9 @@ endpoint_receive_data :: proc(ep: ^Endpoint, packet_data: []u8) -> Error {
             if !sent_packet.acked && int(sent_packet.sequence) == ack_sequence {
               sent_packet.acked = true
               append(&ep.acks, u16(ack_sequence))
-              ep.num_acked_packets += 1
-              ep.rtt_accumulator_ms += f32(time.duration_milliseconds(time.diff(sent_packet.send_time, receive_time)))
+              rtt := time.duration_seconds(time.diff(sent_packet.send_time, receive_time))
+              assert(rtt >= 0)
+              append(&ep.rtt_history_buffer, rtt)
             }
           }
         }
@@ -367,6 +379,8 @@ endpoint_receive_data :: proc(ep: ^Endpoint, packet_data: []u8) -> Error {
 
       received_packet := Received_Packet {
         sequence = packet.sequence,
+        size = len(packet_data),
+        receive_time = receive_time,
       }
 
       ep.received_packets_buffer[packet.sequence%len(ep.received_packets_buffer)] = received_packet
@@ -447,8 +461,8 @@ endpoint_num_packets_sent_during_last_rtt :: proc(ep: ^Endpoint) -> (result: int
 
     if ok {
       if sent_packet.sequence == sequence {
-        time_since_send := f32(time.duration_milliseconds(time.since(sent_packet.send_time)))
-        if time_since_send >= ep.estimated_rtt_ms {
+        time_since_send := time.duration_seconds(time.since(sent_packet.send_time))
+        if time_since_send >= ep.rtt_avg {
           break
         }
 
@@ -461,40 +475,180 @@ endpoint_num_packets_sent_during_last_rtt :: proc(ep: ^Endpoint) -> (result: int
 }
 
 endpoint_update :: proc(ep: ^Endpoint) {
-  duration_seconds_since_last_measure_time := time.duration_seconds(time.since(ep.start_measure_time))
-  if duration_seconds_since_last_measure_time >= 1 {
+  now_time := time.now()
+  duration_seconds_since_last_measure_time := time.duration_seconds(time.diff(ep.start_measure_time, now_time))
+  measure_period := f64(1)
+  if duration_seconds_since_last_measure_time >= measure_period {
 
-    ep.estimated_received_bandwidth = 0
-    ep.estimated_sent_bandwidth = 0
+    // calculate min and max rtt
+    {
+      rtt_min := math.INF_F64
+      rtt_max: f64
+      sum_rtt: f64
 
-    ep.num_sent_packets = ep.sent_packets_accumulator
+      for rtt in ep.rtt_history_buffer {
+        rtt_min = min(rtt, rtt_min)
+        rtt_max = max(rtt, rtt_max)
 
-    if ep.num_acked_packets != 0 {
-      ep.estimated_rtt_ms = ep.rtt_accumulator_ms / f32(ep.num_acked_packets)
+        sum_rtt += rtt
+      }
+
+      if rtt_min == math.INF_F64 do rtt_min = 0
+
+      ep.rtt_min = rtt_min
+      ep.rtt_max = rtt_max
+      if len(ep.rtt_history_buffer) != 0 {
+        ep.rtt_avg = sum_rtt / f64(len(ep.rtt_history_buffer))
+      } else {
+        ep.rtt_avg = 1
+      }
     }
 
-    if ep.sent_packets_accumulator != 0 {
-      // since we can't possibly have received acks for the packets sent during the last
-      // RTT, we will remove them
-      ep.estimated_packet_loss = 1 - f32(ep.num_acked_packets) / f32(ep.sent_packets_accumulator - endpoint_num_packets_sent_during_last_rtt(ep))
-      ep.estimated_packet_loss = clamp(ep.estimated_packet_loss, 0, 1)
+    // calculate avg vs min rtt jitter
+    {
+      sum: f64
+      for rtt in ep.rtt_history_buffer {
+        sum += rtt - ep.rtt_min
+      }
+
+      if len(ep.rtt_history_buffer) > 0 {
+        ep.jitter_avg_vs_min_rtt = sum / f64(len(ep.rtt_history_buffer))
+      } else {
+        ep.jitter_avg_vs_min_rtt = 0
+      }
     }
 
-    if ep.num_bytes_sent != 0 {
-      ep.estimated_sent_bandwidth = u64(ep.num_bytes_sent)
+    // calculate max vs min rtt
+    {
+      v: f64
+      for rtt in ep.rtt_history_buffer {
+        difference := rtt - ep.rtt_min
+        v = max(v, difference)
+      }
+
+      ep.jitter_max_vs_min_rtt = v
     }
 
-    if ep.num_bytes_received != 0 {
-      ep.estimated_received_bandwidth = u64(ep.num_bytes_received)
+    // calculate standard deviation for rtt vs avg rtt
+    {
+      sum: f64
+      for rtt in ep.rtt_history_buffer {
+        deviation := rtt - ep.rtt_avg
+        sum += deviation*deviation
+      }
+
+      if len(ep.rtt_history_buffer) > 0 {
+        ep.jitter_stddev_vs_avg_rtt = math.sqrt(sum / f64(len(ep.rtt_history_buffer)))
+      } else {
+        ep.jitter_stddev_vs_avg_rtt = 0
+      }
     }
 
-    ep.num_bytes_sent = 0
-    ep.num_bytes_received = 0
-    ep.num_acked_packets = 0
-    ep.sent_packets_accumulator = 0
-    ep.rtt_accumulator_ms = 0
+    // calculate packet loss
+    {
+      num_sent: int
+      num_dropped: int
+
+      for i in 0..<len(ep.sent_packets_buffer) {
+        sequence := ep.sequence - 1 - u16(i)
+        sent_packet, ok := &ep.sent_packets_buffer[sequence%len(ep.sent_packets_buffer)].?
+        if ok {
+          if time.duration_seconds(time.diff(sent_packet.send_time, now_time)) > measure_period {
+              break
+          }
+          if sent_packet.sequence == sequence && time.duration_seconds(time.diff(sent_packet.send_time, now_time)) >= ep.rtt_avg {
+            num_sent += 1
+            if !sent_packet.acked {
+              num_dropped += 1
+            }
+          }
+        }
+      }
+
+      if num_sent > 0 {
+        packet_loss := f64(num_dropped) / f64(num_sent) * 100
+        if abs(packet_loss - ep.packet_loss) > 0.00001 {
+          ep.packet_loss += (packet_loss - ep.packet_loss) * 0.9
+        } else {
+          ep.packet_loss = packet_loss
+        }
+      } else {
+        ep.packet_loss = 0
+      }
+    }
+
+    // calculate outgoing bandwidth
+    {
+      bytes_sent: int
+      start_time := time.Time{bits.I64_MAX}
+      end_time: time.Time
+      for i in 0..<len(ep.sent_packets_buffer) {
+        sequence := ep.sequence - 1 - u16(i)
+        sent_packet, ok := &ep.sent_packets_buffer[sequence%len(ep.sent_packets_buffer)].?
+        if ok {
+          if sent_packet.sequence == sequence {
+            if time.duration_seconds(time.diff(sent_packet.send_time, now_time)) > measure_period {
+              break
+            }
+            bytes_sent += sent_packet.size
+            if time.diff(end_time, sent_packet.send_time) > 0 {
+              end_time = sent_packet.send_time
+            }
+            if time.diff(start_time, sent_packet.send_time) < 0 {
+              start_time = sent_packet.send_time
+            }
+          }
+        }
+      }
+
+      if start_time != {bits.I64_MAX} && end_time != {0} {
+        outgoing_bandwidth_kbps := f64(bytes_sent) / time.duration_seconds(time.diff(start_time, end_time)) * 8 / 1024
+        if abs(outgoing_bandwidth_kbps - ep.outgoing_bandwidth_kbps) > 0.00001 {
+          ep.outgoing_bandwidth_kbps += (outgoing_bandwidth_kbps - ep.outgoing_bandwidth_kbps) * 0.9
+        } else {
+          ep.outgoing_bandwidth_kbps = outgoing_bandwidth_kbps
+        }
+      }
+    }
+
+    // calculate incoming bandwidth
+    {
+      bytes_received: int
+      start_time := time.Time{bits.I64_MAX}
+      end_time: time.Time
+      for i in 0..<len(ep.received_packets_buffer) {
+        sequence := ep.received_packets_buffer_sequence - 1 - u16(i)
+        received_packet, ok := &ep.received_packets_buffer[sequence%len(ep.received_packets_buffer)].?
+        if ok {
+          if received_packet.sequence == sequence {
+            if time.duration_seconds(time.diff(received_packet.receive_time, now_time)) > measure_period {
+              break
+            }
+            bytes_received += received_packet.size
+            if time.diff(end_time, received_packet.receive_time) > 0 {
+              end_time = received_packet.receive_time
+            }
+            if time.diff(start_time, received_packet.receive_time) < 0 {
+              start_time = received_packet.receive_time
+            }
+          }
+        }
+      }
+
+      if start_time != {bits.I64_MAX} && end_time != {0} {
+        incoming_bandwidth_kbps := f64(bytes_received) / time.duration_seconds(time.diff(start_time, end_time)) * 8 / 1024
+        if abs(incoming_bandwidth_kbps - ep.incoming_bandwidth_kbps) > 0.00001 {
+          ep.incoming_bandwidth_kbps += (incoming_bandwidth_kbps - ep.incoming_bandwidth_kbps) * 0.9
+        } else {
+          ep.incoming_bandwidth_kbps = incoming_bandwidth_kbps
+        }
+      }
+    }
+
+    clear(&ep.rtt_history_buffer)
     ep.start_measure_time = time.now()
   }
+
 }
 
 @require_results

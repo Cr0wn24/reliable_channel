@@ -476,7 +476,8 @@ endpoint_num_packets_sent_during_last_rtt :: proc(ep: ^Endpoint) -> (result: int
 endpoint_update :: proc(ep: ^Endpoint) {
   now_time := time.now()
   duration_seconds_since_last_measure_time := time.duration_seconds(time.diff(ep.start_measure_time, now_time))
-  measure_period := f64(1)
+  measure_period := 1.0
+  smoothing_factor := 0.1
   if duration_seconds_since_last_measure_time >= measure_period {
 
     // calculate min and max rtt
@@ -567,7 +568,7 @@ endpoint_update :: proc(ep: ^Endpoint) {
       if num_sent > 0 {
         packet_loss := f64(num_dropped) / f64(num_sent) * 100
         if abs(packet_loss - ep.packet_loss) > 0.00001 {
-          ep.packet_loss += (packet_loss - ep.packet_loss) * 0.9
+          ep.packet_loss += (packet_loss - ep.packet_loss) * smoothing_factor
         } else {
           ep.packet_loss = packet_loss
         }
@@ -603,7 +604,7 @@ endpoint_update :: proc(ep: ^Endpoint) {
       if start_time != {bits.I64_MAX} && end_time != {0} {
         outgoing_bandwidth_kbps := f64(bytes_sent) / time.duration_seconds(time.diff(start_time, end_time)) * 8 / 1024
         if abs(outgoing_bandwidth_kbps - ep.outgoing_bandwidth_kbps) > 0.00001 {
-          ep.outgoing_bandwidth_kbps += (outgoing_bandwidth_kbps - ep.outgoing_bandwidth_kbps) * 0.9
+          ep.outgoing_bandwidth_kbps += (outgoing_bandwidth_kbps - ep.outgoing_bandwidth_kbps) * smoothing_factor
         } else {
           ep.outgoing_bandwidth_kbps = outgoing_bandwidth_kbps
         }
@@ -637,7 +638,7 @@ endpoint_update :: proc(ep: ^Endpoint) {
       if start_time != {bits.I64_MAX} && end_time != {0} {
         incoming_bandwidth_kbps := f64(bytes_received) / time.duration_seconds(time.diff(start_time, end_time)) * 8 / 1024
         if abs(incoming_bandwidth_kbps - ep.incoming_bandwidth_kbps) > 0.00001 {
-          ep.incoming_bandwidth_kbps += (incoming_bandwidth_kbps - ep.incoming_bandwidth_kbps) * 0.9
+          ep.incoming_bandwidth_kbps += (incoming_bandwidth_kbps - ep.incoming_bandwidth_kbps) * smoothing_factor
         } else {
           ep.incoming_bandwidth_kbps = incoming_bandwidth_kbps
         }

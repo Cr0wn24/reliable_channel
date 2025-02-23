@@ -477,7 +477,7 @@ endpoint_update :: proc(ep: ^Endpoint) {
   now_time := time.now()
   duration_seconds_since_last_measure_time := time.duration_seconds(time.diff(ep.start_measure_time, now_time))
   measure_period := 1.0
-  smoothing_factor := 0.1
+  smoothing_factor := 0.5
   if duration_seconds_since_last_measure_time >= measure_period {
 
     // calculate min and max rtt

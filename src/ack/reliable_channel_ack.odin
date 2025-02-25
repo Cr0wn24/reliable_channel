@@ -78,7 +78,8 @@ Endpoint :: struct {
   jitter_stddev_vs_avg_rtt: f64,
   incoming_bandwidth_kbps: f64,
   outgoing_bandwidth_kbps: f64,
-  num_sent_packets: int,
+  sent_packets_count: int,
+  received_packets_count: int,
 
   user_data: rawptr,
 
@@ -195,7 +196,7 @@ endpoint_reset :: proc(ep: ^Endpoint) {
   ep.jitter_stddev_vs_avg_rtt = 0
   ep.incoming_bandwidth_kbps = 0
   ep.outgoing_bandwidth_kbps = 0
-  ep.num_sent_packets = 0
+  ep.sent_packets_count = 0
 
   for &elem in ep.received_packets_buffer {
     elem = nil
@@ -271,6 +272,7 @@ endpoint_send_data :: proc(ep: ^Endpoint, data: []u8) -> (err: Error) {
       packet.ack_bits = ack_bits
       ep.send_callback(ep, packet_data)
       sent_packet.size += len(packet_data)
+
     } else if fragment_count > 1 {
 
       // this packet requires multiple fragments, we have to do extra work
@@ -575,6 +577,8 @@ endpoint_update :: proc(ep: ^Endpoint) {
       } else {
         ep.packet_loss = 0
       }
+
+      ep.sent_packets_count = num_sent
     }
 
     // calculate outgoing bandwidth
@@ -613,6 +617,7 @@ endpoint_update :: proc(ep: ^Endpoint) {
 
     // calculate incoming bandwidth
     {
+      received_packets: int
       bytes_received: int
       start_time := time.Time{bits.I64_MAX}
       end_time: time.Time
@@ -624,6 +629,7 @@ endpoint_update :: proc(ep: ^Endpoint) {
             if time.duration_seconds(time.diff(received_packet.receive_time, now_time)) > measure_period {
               break
             }
+            received_packets += 1
             bytes_received += received_packet.size
             if time.diff(end_time, received_packet.receive_time) > 0 {
               end_time = received_packet.receive_time
@@ -634,6 +640,8 @@ endpoint_update :: proc(ep: ^Endpoint) {
           }
         }
       }
+
+      ep.received_packets_count = received_packets
 
       if start_time != {bits.I64_MAX} && end_time != {0} {
         incoming_bandwidth_kbps := f64(bytes_received) / time.duration_seconds(time.diff(start_time, end_time)) * 8 / 1024

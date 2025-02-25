@@ -673,7 +673,8 @@ Perf_Stats :: struct {
   jitter_stddev_vs_avg_rtt: f64,
   incoming_bandwidth_kbps: f64,
   outgoing_bandwidth_kbps: f64,
-  num_sent_packets: int,
+  sent_packets_count: int,
+  received_packets_count: int,
 }
 
 @(require_results)
@@ -688,7 +689,8 @@ channel_get_perf_stats :: proc(channel: ^Channel) -> Perf_Stats {
     jitter_stddev_vs_avg_rtt = channel.endpoint.jitter_stddev_vs_avg_rtt,
     incoming_bandwidth_kbps = channel.endpoint.incoming_bandwidth_kbps,
     outgoing_bandwidth_kbps = channel.endpoint.outgoing_bandwidth_kbps,
-    num_sent_packets = channel.endpoint.num_sent_packets,
+    sent_packets_count = channel.endpoint.sent_packets_count,
+    received_packets_count = channel.endpoint.received_packets_count,
   }
   return result
 }

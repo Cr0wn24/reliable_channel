@@ -10,7 +10,7 @@ import "core:math"
 import "core:math/bits"
 
 FRAGMENT_SIZE :: 1024
-MAX_FRAGMENT_COUNT :: 256
+MAX_FRAGMENT_COUNT :: 1024
 MAX_PACKET_SIZE :: MAX_FRAGMENT_COUNT * FRAGMENT_SIZE
 
 @(require_results)

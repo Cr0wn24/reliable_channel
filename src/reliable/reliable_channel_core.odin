@@ -183,12 +183,13 @@ channel_update :: proc(channel: ^Channel, dt: f32) {
 
   channel.received_data = make([dynamic][]u8, 0, 1024, context.temp_allocator)
 
+  buffer: bytes.Buffer
+  bytes.buffer_init_allocator(&buffer, 0, FRAGMENT_CRITICAL_SIZE, context.temp_allocator)
+
 
   for message_id := channel.next_unacked_message_id; channel_can_send_message_id(channel, message_id); {
     clear(&channel.ids)
-
-    buffer: bytes.Buffer
-    bytes.buffer_init_allocator(&buffer, 0, FRAGMENT_CRITICAL_SIZE, context.temp_allocator)
+    bytes.buffer_reset(&buffer)
 
     for ; channel_can_send_message_id(channel, message_id); message_id += 1 {
       entry := channel_get_message_queue_entry(channel, message_id)
